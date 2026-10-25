@@ -37,6 +37,9 @@ struct Session {
     // its response's last byte, however steadily bytes arrive (-1: none). A
     // host name's lookup isn't bounded by it either.
     total_ms: i64 = -1,
+    // How long a request that asked for 100 Continue (expect_continue)
+    // waits for it before it sends its body anyway (-1: until an answer).
+    expect_ms: i64 = 1000,
     // The most redirects a request follows (0: none, a redirect is the
     // response), as follow describes.
     redirects: i64 = 0,
@@ -89,6 +92,11 @@ struct ClientRequest {
     // What the block did that fails the request: "header" for a field it
     // refused, "body" for a second body.
     refused: const u8[:] = "",
+    // A body the program writes after begin, as stream says: its length, or
+    // -1 for chunks; -2 for none.
+    length: i64 = -2,
+    // Whether the request waits for 100 Continue before its body.
+    expect: bool = false,
 }
 
 // The response: its status, its header field lines, each ending in CRLF,
@@ -110,7 +118,7 @@ fn header(r: const ClientResponse&, name: const u8[:]) -> const u8[:], bool {
 // fail the request with call "header".
 fn header(req: ClientRequest&, name: const u8[:], value: const u8[:]) {
     let own = same_name(name, "Host") || same_name(name, "Content-Length")
-        || same_name(name, "Transfer-Encoding") || same_name(name, "Connection");
+        || same_name(name, "Transfer-Encoding") || same_name(name, "Connection") || same_name(name, "Expect");
     guard !own && is_field(name, trim_ows(value)) else {
         if req.refused.len == 0 { req.refused = "header"; }
         return;
@@ -136,6 +144,25 @@ fn body(req: ClientRequest&, media: const u8[:], bytes: const u8[:]) {
     req.payload.append(bytes);
     req.media = media;
 }
+
+// Makes the body one the program writes after begin, with write and then
+// end_body, so it needn't be held whole: length bytes, said in
+// Content-Length, or for length -1, chunks. Only begin takes such a
+// request; request and its forms fail it with call "body".
+fn stream(req: ClientRequest&, media: const u8[:], length: i64) {
+    guard first_body(req) else { return; }
+    guard length >= -1 else {
+        if req.refused.len == 0 { req.refused = "body"; }
+        return;
+    }
+    req.media = if media.len > 0 { media } else { "application/octet-stream" };
+    req.length = length;
+}
+
+// Sends Expect: 100-continue, and holds the body until the server answers
+// 100 Continue, or for Session.expect_ms, so that a server that refuses the
+// request, as with 401 or 413, does so before the body is sent.
+fn expect_continue(req: ClientRequest&) { req.expect = true; }
 
 fn first_body(req: ClientRequest&) -> bool {
     guard req.media.len > 0 else { return true; }
@@ -362,17 +389,24 @@ fn parse_url(url: const u8[:]) -> Url, bool {
 }
 
 // Appends the request to out: its request line, Host, User-Agent, Accept,
-// req's fields, its body's Content-Type and Content-Length, and the body. A
-// POST, PUT, or PATCH says Content-Length: 0 for no body.
+// req's fields, its body's Content-Type and Content-Length, or
+// Transfer-Encoding: chunked for a body stream declared in chunks, and the
+// body, unless it waits for 100 Continue (expect_continue) or the program
+// writes it. A POST, PUT, or PATCH says Content-Length: 0 for no body.
 fn write_request(out: u8[>..]&, method: const u8[:], u: Url, req: const ClientRequest&) {
     format(out, method, " ", u.target, " HTTP/1.1\r\nHost: ", u.authority,
            "\r\nUser-Agent: goose-http\r\nAccept: */*\r\n", req.lines);
     if req.media.len > 0 { format(out, "Content-Type: ", req.media, "\r\n"); }
-    if req.payload.len > 0 || method == "POST" || method == "PUT" || method == "PATCH" {
+    if req.length == -1 {
+        out.append("Transfer-Encoding: chunked\r\n");
+    } else if req.length >= 0 {
+        format(out, "Content-Length: ", req.length, "\r\n");
+    } else if req.payload.len > 0 || method == "POST" || method == "PUT" || method == "PATCH" {
         format(out, "Content-Length: ", req.payload.len, "\r\n");
     }
+    if req.expect { out.append("Expect: 100-continue\r\n"); }
     out.append("\r\n");
-    out.append(req.payload);
+    if !req.expect { out.append(req.payload); }
 }
 
 fn client_error(call: const u8[:]) -> Error { Error { call: call, code: EINVAL } }
@@ -387,6 +421,7 @@ fn exchange(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
 // begin, response, read to the body's end, and end.
 fn exchange_by(s: Session&, method: const u8[:], url: const u8[:], req: const ClientRequest&, until: i64) -> ClientResponse, Error {
     var r = ClientResponse { .. };
+    guard req.length == -2 else { return r, client_error("body"); }
     var x, e = begin_by(s, method, url, req, until);
     guard e.code == 0 else { return r, e; }
     e = response(s, x);
@@ -421,8 +456,18 @@ struct ClientExchange {
     // request's.
     body: BodyReader = BodyReader.None,
     chunked: bool = false,
-    // A body that ends when the connection does, which can't be reused.
+    // A body that ends when the connection does, which can't be reused; and
+    // a request whose body the server answered before it was sent, whose
+    // connection can't carry another either.
     to_close: bool = false,
+    last: bool = false,
+    // A body the program writes, as stream declared it: its length, -1 for
+    // chunks, -2 for none; what's written of it; whether more may come; and
+    // whether the server answered before it, so it isn't sent.
+    upload: i64 = -2,
+    uploaded: i64 = 0,
+    sending: bool = false,
+    rejected: bool = false,
     // The body's bytes as sent so far, which Session.max_body limits.
     taken: i64 = 0,
     head_only: bool = false,
@@ -465,7 +510,91 @@ fn begin_by(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     guard e.code == 0 else { return x, e; }
     e = put(s, wire, until);
     guard e.code == 0 else { return x, failed(s, x, e); }
+    x.upload = req.length;
+    x.sending = req.length >= -1;
+    if req.expect {
+        e = await_continue(s, x);
+        guard e.code == 0 else { return x, e; }
+        if !x.rejected && req.payload.len > 0 {
+            e = put(s, req.payload, until);
+            guard e.code == 0 else { return x, failed(s, x, e); }
+        }
+    }
     return x, no_error();
+}
+
+// Waits, after a head that asked for 100 Continue, for the server's answer,
+// up to Session.expect_ms: no error to go on with the body, after a 100 or
+// once the wait is over; or with x.rejected, the server's final answer held
+// for response, and the body not to be sent.
+fn await_continue(s: Session&, x: ClientExchange&) -> Error {
+    let wait = if s.expect_ms < 0 { -1 } else { deadline(s.expect_ms) };
+    let phase = if wait < 0 { x.until } else if x.until < 0 { wait } else { min(wait, x.until) };
+    var buf: u8[4096] = [0; 4096];
+    loop {
+        let h, verdict = response_head(x.held, false);
+        if verdict == READ_COMPLETE && h.status >= 200 {
+            x.rejected = true;
+            x.sending = false;
+            x.last = true;
+            return no_error();
+        }
+        if verdict == READ_COMPLETE {
+            drop_front(x.held, h.end);
+            if h.status == 100 { return no_error(); }
+            continue;
+        }
+        guard verdict == INCOMPLETE else { return failed(s, x, client_error("response")); }
+        guard !expired(x.until) else { return failed(s, x, Error { call: "recv", code: ETIMEDOUT }); }
+        guard !expired(phase) else { return no_error(); }
+        let n, e = take(s, buf, phase);
+        if e.code == ETIMEDOUT && !expired(x.until) { return no_error(); }
+        guard e.code == 0 else { return failed(s, x, e); }
+        guard n > 0 else { return failed(s, x, client_error("response")); }
+        x.held.append(buf[..n]);
+    }
+}
+
+// Writes the next bytes of a body that stream declared, within
+// Session.total_ms: the bytes as they are for a Content-Length, or as one
+// chunk. More than Content-Length said fails with call "body"; EPIPE, from
+// "body", once the server has answered before the body, which x.status then
+// is, and response returns. A failure closes the connection.
+fn write(s: Session&, x: ClientExchange&, data: const u8[:]) -> Error {
+    guard !x.failed else { return client_error("response"); }
+    guard !x.rejected else { return Error { call: "body", code: EPIPE }; }
+    guard x.sending else { return client_error("body"); }
+    guard data.len > 0 else { return no_error(); }
+    guard !expired(x.until) else { return failed(s, x, Error { call: "send", code: ETIMEDOUT }); }
+    if x.upload >= 0 {
+        guard x.uploaded + data.len <= x.upload else { return failed(s, x, client_error("body")); }
+        x.uploaded += data.len;
+        let e = put(s, data, x.until);
+        return if e.code == 0 { e } else { failed(s, x, e) };
+    }
+    var size: u8[>..] = [];
+    hex_size(size, data.len);
+    size.append("\r\n");
+    var e = put(s, size, x.until);
+    if e.code == 0 { e = put(s, data, x.until); }
+    if e.code == 0 { e = put(s, "\r\n", x.until); }
+    x.uploaded += data.len;
+    return if e.code == 0 { e } else { failed(s, x, e) };
+}
+
+// Ends a body that stream declared: sends the last chunk, or checks that
+// every byte Content-Length said was written, and fails with call "body",
+// closing the connection, where one wasn't. Nothing to do once the server
+// has answered before the body.
+fn end_body(s: Session&, x: ClientExchange&) -> Error {
+    guard !x.failed else { return client_error("response"); }
+    guard x.sending else { return no_error(); }
+    x.sending = false;
+    if x.upload >= 0 {
+        return if x.uploaded == x.upload { no_error() } else { failed(s, x, client_error("body")) };
+    }
+    let e = put(s, "0\r\n\r\n", x.until);
+    return if e.code == 0 { e } else { failed(s, x, e) };
 }
 
 // Reads the response's head into x.status and x.fields, skipping a 1xx
@@ -473,6 +602,7 @@ fn begin_by(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
 fn response(s: Session&, x: ClientExchange&) -> Error {
     guard !x.failed else { return client_error("response"); }
     guard !x.headed else { return no_error(); }
+    guard !x.sending else { return client_error("body"); }
     var buf: u8[16384] = [0; 16384];
     var interim = 0;
     loop {
@@ -611,7 +741,7 @@ fn took(s: Session&, x: ClientExchange&, n: i64) -> bool {
 // unread is never read as the next one's.
 fn end(s: Session&, x: ClientExchange&) {
     let connection, has = field_in(x.fields, "Connection");
-    let keep = x.done && !x.failed && !x.to_close && x.held.len == 0 && !(has && has_close(connection));
+    let keep = x.done && !x.failed && !x.to_close && !x.last && x.held.len == 0 && !(has && has_close(connection));
     if !keep { hangup(s); }
     x.failed = !keep || x.failed;
 }
