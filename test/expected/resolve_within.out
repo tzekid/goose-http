@@ -1,0 +1,5 @@
+within 5 s: true
+without a limit: true
+with none left: true
+a name too long: true
+connect with none left: resolve true, socket -1

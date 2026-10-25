@@ -602,10 +602,12 @@ http::hangup(s);
 
 - `http::connect(host, port, ms)` returns the socket, connected, or `Socket { fd: -1 }`
   and an `http::Error`: `connect`'s `ECONNREFUSED`, `ETIMEDOUT` past `ms`, and the like,
-  or `connect_start`'s. A name is resolved first, which `ms` doesn't bound: `resolve`'s
-  `ENOENT` for a name with no address, or `EAGAIN` for a lookup that failed for now.
-  Its addresses are tried in the resolver's order, up to 8, all within `ms`, and the
-  error is the last one's.
+  or `connect_start`'s. A name is resolved first, within `ms` too, on a thread of its
+  own, since no system resolver can be stopped midway: `resolve`'s `ETIMEDOUT` past
+  `ms`, whose lookup then ends alone, `ENOENT` for a name with no address, or `EAGAIN`
+  for a lookup that failed for now, or while 32 lookups are running, as ones that
+  outlived their callers' limits may be. Its addresses are tried in the resolver's
+  order, up to 8, all within `ms`, and the error is the last one's.
 - `http::connect(host, port, ms, deny)` doesn't connect to an address in a class that
   `deny`'s bits name, for a program that connects where a URL from outside says:
   `DENY_LOOPBACK`, `DENY_PRIVATE`, `DENY_LINK_LOCAL`, `DENY_SPECIAL`, or
@@ -724,7 +726,7 @@ such as `unix:/run/app.sock`; TLS still checks the URL's host. `Session.total_ms
 default (none), limits a request as a whole, from its connect to its response's last
 byte, so a server that sends a byte now and then can't hold it past the limit as it can
 past `ms`; a request that runs out fails with `ETIMEDOUT`, its `call` the step it was
-in, and its connection is closed. Neither limit bounds a host name's lookup.
+in, and its connection is closed. Both limits bound a host name's lookup too.
 `Session.deny`, 0 by default, holds the classes of address the session doesn't connect
 to, as `http::connect`'s `deny` ([on a thread without a loop](#on-a-thread-without-a-loop)):
 `http::DENY_NON_PUBLIC` keeps a session that requests URLs from outside to public

@@ -129,6 +129,10 @@ extern fn net_connect(addr: const u8[:], port: i32, flags: i32) -> i32;
 // name with none, -EAGAIN for a lookup that failed for now, or -EINVAL. It
 // blocks until the lookup ends, so only a thread that may block calls it.
 extern fn net_resolve(host: const u8[:], out: u8[:]) -> i32;
+// net_resolve, waiting for it up to ms (-1: no limit), on a thread of its own
+// (shim/resolve.c): -ETIMEDOUT past ms, whose lookup ends alone, or -EAGAIN
+// while 32 lookups are running already.
+extern fn net_resolve_within(host: const u8[:], out: u8[:], ms: i32) -> i32;
 extern fn net_connected(fd: i32) -> i32;
 // Waits up to ms (-1: no limit) for fd to be ready for events, EPOLLIN and
 // EPOLLOUT. Returns the bits it's ready for, EPOLLERR and EPOLLHUP among

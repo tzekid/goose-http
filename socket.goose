@@ -197,10 +197,11 @@ fn ipv4_class(a: u8, b: u8, c: u8) -> i64 {
 // send_all wait for it. An error as connect_start's, or ETIMEDOUT.
 //
 // A host that is a name is resolved first, with the system's resolver,
-// which the time limit doesn't bound: resolve's ENOENT for a name with no
-// address, or EAGAIN for a lookup that failed for now. Its addresses are
-// tried in the resolver's order, up to RESOLVED_MAX, all within ms; the
-// error is the last one's.
+// within ms too (net_resolve_within): resolve's ETIMEDOUT past it, ENOENT for
+// a name with no address, or EAGAIN for a lookup that failed for now, or
+// while 32 lookups that outlived their callers' limits still run. Its
+// addresses are tried in the resolver's order, up to RESOLVED_MAX, all
+// within ms; the error is the last one's.
 //
 // deny holds DENY_ bits: an address in one of their classes isn't
 // connected to, and when every address is, connect fails with EACCES. A
@@ -218,7 +219,8 @@ fn connect(host: const u8[:], port: i64, ms: i64, deny: i64 = 0) -> Socket, Erro
     }
     guard port > 0 && port < 65536 else { return Socket { .. }, Error { call: "connect", code: EINVAL }; }
     var addrs: u8[16 * RESOLVED_MAX] = [0; 16 * RESOLVED_MAX];
-    let n = net_resolve(host, addrs);
+    let left = if until < 0 { -1 } else { min(max(until - net_clock_ms(), 0), 1 << 30) };
+    let n = net_resolve_within(host, addrs, left as i32);
     guard n > 0 else { return Socket { .. }, Error { call: "resolve", code: -n }; }
     var e = Error { call: "connect", code: EACCES };
     for i in n {
