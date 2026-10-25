@@ -33,6 +33,10 @@ struct Session {
     // The limit in milliseconds on each wait: the connect, a send, a read
     // (-1: none). A host name's lookup isn't bounded by it.
     ms: i64 = 30000,
+    // The limit in milliseconds on a request as a whole, from its connect to
+    // its response's last byte, however steadily bytes arrive (-1: none). A
+    // host name's lookup isn't bounded by it either.
+    total_ms: i64 = -1,
     // The most body a response may have, in bytes as sent.
     max_body: i64 = 16 << 20,
     // An address to connect to in place of the URL's host and port, such as
@@ -234,9 +238,10 @@ fn exchange(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     var wire: u8[>..] = [];
     write_request(wire, method, u, req);
 
-    var e = open(s, u);
+    let until = deadline(s.total_ms);
+    var e = open(s, u, until);
     guard e.code == 0 else { return r, e; }
-    e = put(s, wire);
+    e = put(s, wire, until);
     guard e.code == 0 else {
         hangup(s);
         return r, e;
@@ -245,7 +250,7 @@ fn exchange(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     var raw: u8[>..] = [];
     var buf: u8[16384] = [0; 16384];
     loop {
-        let n, got = take(s, buf);
+        let n, got = take(s, buf, until);
         guard got.code == 0 else {
             hangup(s);
             r.status = 0;
@@ -263,12 +268,29 @@ fn exchange(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
             r.status = 0;
             return r, client_error("response");
         }
+        guard !expired(until) else {
+            hangup(s);
+            r.status = 0;
+            return r, Error { call: "recv", code: ETIMEDOUT };
+        }
     }
 }
 
+// The limit on one wait of a request that must end by until (-1: none): the
+// session's limit on each wait, cut to the time left.
+fn wait_ms(s: const Session&, until: i64) -> i64 {
+    guard until >= 0 else { return s.ms; }
+    let left = max(until - net_clock_ms(), 0);
+    return if s.ms < 0 { left } else { min(s.ms, left) };
+}
+
+fn expired(until: i64) -> bool { until >= 0 && net_clock_ms() >= until }
+
 // Makes the session's connection one to u's peer: the open one, while the
-// server hasn't closed it, or a new one, with its TLS handshake done.
-fn open(s: Session&, u: Url) -> Error {
+// server hasn't closed it, or a new one, with its TLS handshake done. until,
+// here and below, is the clock's time by which the request must end (-1:
+// none), as deadline gives it.
+fn open(s: Session&, u: Url, until: i64 = -1) -> Error {
     var peer: u8[..320] = [];
     guard u.authority.len < 300 else { return client_error("url"); }
     format(peer, if u.secure { "https://" } else { "http://" }, u.host, ":", u.port);
@@ -280,7 +302,7 @@ fn open(s: Session&, u: Url) -> Error {
     }
     hangup(s);
     let to = if s.via.len > 0 { s.via[..] } else { u.host };
-    let sock, e = connect(to, u.port, s.ms);
+    let sock, e = connect(to, u.port, wait_ms(s, until));
     guard e.code == 0 else { return e; }
     s.s = sock;
     if u.secure {
@@ -289,7 +311,7 @@ fn open(s: Session&, u: Url) -> Error {
             return client_error("tls");
         }
         s.c = tls::connect(s.ctx, u.host);
-        let h = handshake(s);
+        let h = handshake(s, until);
         guard h.code == 0 else {
             hangup(s);
             return h;
@@ -299,45 +321,46 @@ fn open(s: Session&, u: Url) -> Error {
     return no_error();
 }
 
-fn handshake(s: Session&) -> Error {
+fn handshake(s: Session&, until: i64 = -1) -> Error {
     guard tls::ok(s.c) else { return client_error("tls"); }
     var wire: u8[16384] = [0; 16384];
     loop {
         let r = tls::handshake(s.c);
-        let e = flush(s);
+        let e = flush(s, until);
         guard e.code == 0 else { return e; }
         if r == 0 { return no_error(); }
         guard r == tls::WANT_INPUT else { return client_error("tls"); }
-        let n = recv(s.s, wire, s.ms);
+        guard !expired(until) else { return Error { call: "recv", code: ETIMEDOUT }; }
+        let n = recv(s.s, wire, wait_ms(s, until));
         guard n > 0 else { return Error { call: "recv", code: if n == 0 { ECONNRESET } else { -n } }; }
         guard tls::feed(s.c, wire[..n]) == n else { return client_error("tls"); }
     }
 }
 
 // Sends what TLS has to send.
-fn flush(s: Session&) -> Error {
+fn flush(s: Session&, until: i64 = -1) -> Error {
     var buf: u8[16384] = [0; 16384];
     loop {
         let n = tls::drain(s.c, buf);
         guard n > 0 else { return no_error(); }
-        let e = send_all(s.s, buf[..n], s.ms);
+        let e = send_all(s.s, buf[..n], wait_ms(s, until));
         guard e.code == 0 else { return e; }
     }
 }
 
 // Sends bytes on the session's connection.
-fn put(s: Session&, bytes: const u8[:]) -> Error {
-    guard tls::ok(s.c) else { return send_all(s.s, bytes, s.ms); }
+fn put(s: Session&, bytes: const u8[:], until: i64 = -1) -> Error {
+    guard tls::ok(s.c) else { return send_all(s.s, bytes, wait_ms(s, until)); }
     guard tls::write(s.c, bytes) == bytes.len else { return client_error("tls"); }
-    return flush(s);
+    return flush(s, until);
 }
 
 // Bytes from the session's connection into buf: how many, or 0 once the
 // server has closed it. Under TLS, only close_notify is a close: a socket
 // that ends without it could cut a body that ends with the connection.
-fn take(s: Session&, buf: u8[:]) -> i64, Error {
+fn take(s: Session&, buf: u8[:], until: i64 = -1) -> i64, Error {
     guard tls::ok(s.c) else {
-        let n = recv(s.s, buf, s.ms);
+        let n = recv(s.s, buf, wait_ms(s, until));
         return if n >= 0 { n } else { 0 }, if n >= 0 { no_error() } else { Error { call: "recv", code: -n } };
     }
     var wire: u8[16384] = [0; 16384];
@@ -346,7 +369,8 @@ fn take(s: Session&, buf: u8[:]) -> i64, Error {
         if n > 0 { return n, no_error(); }
         if n == tls::CLOSED { return 0, no_error(); }
         guard n == tls::WANT_INPUT else { return 0, client_error("tls"); }
-        let m = recv(s.s, wire, s.ms);
+        guard !expired(until) else { return 0, Error { call: "recv", code: ETIMEDOUT }; }
+        let m = recv(s.s, wire, wait_ms(s, until));
         guard m > 0 else { return 0, Error { call: "recv", code: if m == 0 { ECONNRESET } else { -m } }; }
         guard tls::feed(s.c, wire[..m]) == m else { return 0, client_error("tls"); }
     }
