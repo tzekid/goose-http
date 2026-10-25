@@ -1,0 +1,12 @@
+expected: got 3145728, sum 24266
+3 MB, Content-Length: 200 got 3145728, sum 24266
+chunks: 200 abcdefghij
+refused before the body: begin 0, write body true, ended 0
+  answer: 413 too big
+  kept: false
+100 Continue: 0, 201 got 5, sum 532
+no 100: 0, 200 got 5, sum 532, waited for it true
+short: body, kept false
+past Content-Length: body, kept false
+streamed, to request: body
+a slow reader past total_ms: send true, within a second true, kept false

@@ -791,6 +791,34 @@ exchange as a whole, from `begin` to the body's end. A body past the limit, one 
 short, and any failure close the connection, and the calls after it fail with
 `response`. `http::request` and its forms are this, with the body collected.
 
+A request's body can be written in pieces too, so that it needn't be held whole: the
+block declares it with `http::stream(req, media, length)`, its `Content-Length`, or -1
+for chunks, and between `begin` and `response` the program writes it with
+`http::write(s, x, data)` and ends it with `http::end_body(s, x)`. Shown in
+`test/client/client_upload.goose`.
+
+```rust
+var x, err = http::begin(session, "PUT", "https://storage.example.com/backup.tar") { req =>
+    http::stream(req, "application/x-tar", size);
+    http::expect_continue(req);   // a refusal comes before the body
+};
+while err.code == 0 && more() { err = http::write(session, x, next_piece()); }
+if err.code == 0 { err = http::end_body(session, x); }
+if err.code == 0 || err.code == http::EPIPE { err = http::response(session, x); }
+```
+
+- `http::write` sends the bytes as they are, or as one chunk, within `Session.total_ms`.
+  More than the `Content-Length` fails with call `body`, and so does `end_body` for
+  fewer, each closing the connection. `http::request` and its forms fail a streamed body
+  with call `body`.
+- `http::expect_continue(req)` sends `Expect: 100-continue` and holds the body, a
+  streamed one or one from `http::body` or `http::json`, until the server answers 100
+  Continue, or for `Session.expect_ms`, 1,000 by default (-1: until it answers), after
+  which the body goes anyway. A server that answers with a final status first refuses
+  the body: `write` returns `EPIPE` from `body`, `end_body` does nothing, `response`
+  returns the answer, and `end` closes the connection. The session writes `Expect`
+  itself: `http::header` refuses it.
+
 The calls are compositions of parts a program can call on its own:
 `http::parse_url(url) -> Url, bool`, `http::write_request(out, method, u, req)`, which
 appends the request's bytes, `http::read_response(raw, closed, head, max_body, r)`, which
