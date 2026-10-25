@@ -192,6 +192,17 @@ fn main() {
     print("past max_body: ", e.call, " ", x.failed);
     s.max_body = 16 << 20;
 
+    // A request begun again before the first ended takes a connection of its
+    // own, and the first fails without touching it.
+    var first, fe = http::begin(s, "GET", str(url, "/who"));
+    let second, se2 = http::get(s, str(url, "/who"));
+    var leftover: u8[64] = [0; 64];
+    let ln, le = http::read(s, first, leftover);
+    http::end(s, first);
+    let third, te = http::get(s, str(url, "/who"));
+    print("begun again before the end: the second on ", second.body, ", the first ", le.call,
+          ", the third on ", third.body);
+
     var chain: u8[>..] = [];
     var key: u8[>..] = [];
     let failed = tls::run() {
