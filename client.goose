@@ -774,8 +774,6 @@ fn wait_ms(s: const Session&, until: i64) -> i64 {
     return if s.ms < 0 { left } else { min(s.ms, left) };
 }
 
-fn expired(until: i64) -> bool { until >= 0 && net_clock_ms() >= until }
-
 // Makes the session's connection one to u's peer: the open one, while the
 // server hasn't closed it, or a new one, with its TLS handshake done. until,
 // here and below, is the clock's time by which the request must end (-1:

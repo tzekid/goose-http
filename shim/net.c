@@ -491,6 +491,18 @@ int32_t net_poll(int32_t fd, uint32_t events, int32_t ms) {
     return n > 0 ? p.revents : 0;
 }
 
+/* net_poll over up to 16 sockets at once: 1 + the index of the first one
+   ready, 0 at the time limit or for a signal, or -code. */
+int32_t net_poll_any(net_i64s fds, uint32_t events, int32_t ms) {
+    struct pollfd p[16];
+    int64_t n = fds.len < 16 ? fds.len : 16;
+    for (int64_t i = 0; i < n; i++) p[i] = (struct pollfd){ .fd = (int)fds.data[i], .events = (short)(events & (POLLIN | POLLOUT)) };
+    int r = poll(p, (nfds_t)n, ms);
+    if (r < 0) return errno == EINTR ? 0 : -errno;
+    for (int64_t i = 0; r > 0 && i < n; i++) if (p[i].revents) return (int32_t)i + 1;
+    return 0;
+}
+
 /* The epoll instance of the loop the calling thread runs, which net_arm adds
    to: epoll_loop sets it while it runs, and -1 after. */
 static _Thread_local int32_t net_loop_ep = -1;

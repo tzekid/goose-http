@@ -199,9 +199,9 @@ fn ipv4_class(a: u8, b: u8, c: u8) -> i64 {
 // A host that is a name is resolved first, with the system's resolver,
 // within ms too (net_resolve_within): resolve's ETIMEDOUT past it, ENOENT for
 // a name with no address, or EAGAIN for a lookup that failed for now, or
-// while 32 lookups that outlived their callers' limits still run. Its
-// addresses are tried in the resolver's order, up to RESOLVED_MAX, all
-// within ms; the error is the last one's.
+// while 32 lookups that outlived their callers' limits still run. Up to
+// RESOLVED_MAX of its addresses are raced within ms (race); the error is the
+// last one's.
 //
 // deny holds DENY_ bits: an address in one of their classes isn't
 // connected to, and when every address is, connect fails with EACCES. A
@@ -222,23 +222,113 @@ fn connect(host: const u8[:], port: i64, ms: i64, deny: i64 = 0) -> Socket, Erro
     let left = if until < 0 { -1 } else { min(max(until - net_clock_ms(), 0), 1 << 30) };
     let n = net_resolve_within(host, addrs, left as i32);
     guard n > 0 else { return Socket { .. }, Error { call: "resolve", code: -n }; }
-    var e = Error { call: "connect", code: EACCES };
+    var allowed: u8[16 * RESOLVED_MAX] = [0; 16 * RESOLVED_MAX];
+    var count = 0;
     for i in n {
         var ip: u8[16] = [0; 16];
         copy_into(ip, addrs[i * 16..i * 16 + 16]);
         if (deny & address_class(ip)) != 0 { continue; }
-        let fd = net_connect(addrs[i * 16..i * 16 + 16], port as i32, 0);
-        if fd < 0 {
-            e = Error { call: "connect", code: -fd };
-            continue;
-        }
-        let s, err = finish_connect(Socket { fd: fd }, until);
-        guard err.code != 0 else { return s, err; }
-        e = err;
-        if err.code == ETIMEDOUT { break; }
+        copy_into(allowed[count * 16..count * 16 + 16], ip);
+        count++;
     }
+    guard count > 0 else { return Socket { .. }, Error { call: "connect", code: EACCES }; }
+    return race(allowed[..count * 16], port, until);
+}
+
+// The most connects race has going at once, and how long it lets the newest
+// go on alone before it starts the next: RFC 8305's Connection Attempt Delay.
+let RACE_ATTEMPTS = 4;
+let RACE_DELAY_MS = 250;
+
+// Connects to one of addrs, 16 bytes each as net_resolve gives them, and
+// port, by Happy Eyeballs (RFC 8305): in the resolver's order with the
+// families taking turns, from the first address's (§4), it starts a connect,
+// and the next RACE_DELAY_MS later, or at once when one fails, with up to
+// RACE_ATTEMPTS going at once, until until, the clock's time (-1: no
+// limit). The first to connect wins, and the others are closed. The error,
+// when none does, is the last one's, or ETIMEDOUT at until.
+fn race(addrs: const u8[:], port: i64, until: i64) -> Socket, Error {
+    let n = min(addrs.len / 16, RESOLVED_MAX);
+    var order: i64[RESOLVED_MAX] = [0; RESOLVED_MAX];
+    var taken = 0;
+    var mine = 0;
+    var theirs = 0;
+    let first = is_ipv4(addrs[..16]);
+    while taken < n {
+        while mine < n && is_ipv4(addrs[mine * 16..mine * 16 + 16]) != first { mine++; }
+        if mine < n {
+            order[taken] = mine;
+            taken++;
+            mine++;
+        }
+        while theirs < n && is_ipv4(addrs[theirs * 16..theirs * 16 + 16]) == first { theirs++; }
+        if theirs < n {
+            order[taken] = theirs;
+            taken++;
+            theirs++;
+        }
+    }
+    var fds: i64[RACE_ATTEMPTS] = [-1; RACE_ATTEMPTS];
+    var live = 0;
+    var next = 0;
+    var started = -1;
+    var e = Error { call: "connect", code: ETIMEDOUT };
+    loop {
+        let due = started < 0 || net_clock_ms() - started >= RACE_DELAY_MS;
+        if next < n && live < RACE_ATTEMPTS && due {
+            let at = order[next] * 16;
+            next++;
+            let fd = net_connect(addrs[at..at + 16], port as i32, 0);
+            if fd < 0 {
+                e = Error { call: "connect", code: -fd };
+                started = -1;
+                continue;
+            }
+            fds[live] = fd as i64;
+            live++;
+            started = net_clock_ms();
+        }
+        guard live > 0 else { break; }
+        guard !expired(until) else {
+            e = Error { call: "connect", code: ETIMEDOUT };
+            break;
+        }
+        var wait = if until < 0 { -1 } else { min(max(until - net_clock_ms(), 0), 1 << 30) };
+        if next < n && live < RACE_ATTEMPTS {
+            let delay = max(RACE_DELAY_MS - (net_clock_ms() - started), 0);
+            wait = if wait < 0 { delay } else { min(wait, delay) };
+        }
+        let r = net_poll_any(fds[..live], WRITABLE, wait as i32);
+        if r < 0 {
+            e = Error { call: "poll", code: -r };
+            break;
+        }
+        if r == 0 { continue; }
+        let fd = fds[r - 1] as i32;
+        let c = net_connected(fd);
+        if c == -EINPROGRESS { continue; }
+        fds[r - 1] = fds[live - 1];
+        live--;
+        if c == 0 {
+            for i in live { net_close(fds[i] as i32); }
+            return Socket { fd: fd }, no_error();
+        }
+        net_close(fd);
+        e = Error { call: "connect", code: -c };
+        started = -1;
+    }
+    for i in live { net_close(fds[i] as i32); }
     return Socket { .. }, e;
 }
+
+// Whether addr, 16 bytes as Address holds them, is an IPv4 address.
+fn is_ipv4(addr: const u8[:]) -> bool {
+    for i in 10 { guard addr[i] == 0 else { return false; } }
+    return addr[10] == 0xff && addr[11] == 0xff;
+}
+
+// Expired for until, the clock's time (-1: never).
+fn expired(until: i64) -> bool { until >= 0 && net_clock_ms() >= until }
 
 // Waits until until for s's connect to end, and hangs s up when it failed.
 fn finish_connect(s: Socket, until: i64) -> Socket, Error {
