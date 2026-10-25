@@ -606,8 +606,13 @@ http::hangup(s);
   own, since no system resolver can be stopped midway: `resolve`'s `ETIMEDOUT` past
   `ms`, whose lookup then ends alone, `ENOENT` for a name with no address, or `EAGAIN`
   for a lookup that failed for now, or while 32 lookups are running, as ones that
-  outlived their callers' limits may be. Its addresses are tried in the resolver's
-  order, up to 8, all within `ms`, and the error is the last one's.
+  outlived their callers' limits may be. Up to 8 of its addresses are raced, all within
+  `ms`, by Happy Eyeballs (RFC 8305): in the resolver's order, IPv6 and IPv4 taking
+  turns from the first address's family, a connect starts 250 ms after the one before,
+  or at once when it fails, up to 4 at a time; the first to connect wins, the others
+  are closed, and when none does, the error is the last one's. `http::race(addrs, port,
+  until)` does this for addresses of the program's, 16 bytes each, as `Address` holds
+  them.
 - `http::connect(host, port, ms, deny)` doesn't connect to an address in a class that
   `deny`'s bits name, for a program that connects where a URL from outside says:
   `DENY_LOOPBACK`, `DENY_PRIVATE`, `DENY_LINK_LOCAL`, `DENY_SPECIAL`, or

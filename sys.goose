@@ -139,6 +139,9 @@ extern fn net_connected(fd: i32) -> i32;
 // them, or 0 at the time limit, or for a signal, which is the caller's to
 // wait out again.
 extern fn net_poll(fd: i32, events: u32, ms: i32) -> i32;
+// net_poll over up to 16 sockets at once: 1 + the index in fds of the first
+// one ready, or 0 at the time limit, or for a signal, or -code.
+extern fn net_poll_any(fds: const i64[:], events: u32, ms: i32) -> i32;
 // The poller of the loop running on the calling thread, or -1 for none,
 // which net_arm adds to: epoll_loop's, while it runs.
 extern fn net_loop_bind(ep: i32);

@@ -426,6 +426,23 @@ int32_t net_poll(int32_t fd, uint32_t events, int32_t ms) {
            (p.revents & (POLLERR | POLLNVAL) ? 8 : 0) | (p.revents & POLLHUP ? 16 : 0);
 }
 
+/* net_poll over up to 16 sockets at once: 1 + the index of the first one
+   ready, 0 at the time limit, or -code. A connect that fails is ready, as
+   POLLERR, as on the other platforms. */
+int32_t net_poll_any(net_i64s fds, uint32_t events, int32_t ms) {
+    WSAPOLLFD p[16];
+    int64_t n = fds.len < 16 ? fds.len : 16;
+    for (int64_t i = 0; i < n; i++) {
+        p[i].fd = net_socket((int32_t)fds.data[i]);
+        p[i].events = (SHORT)((events & 1 ? POLLRDNORM : 0) | (events & 4 ? POLLWRNORM : 0));
+        p[i].revents = 0;
+    }
+    int r = WSAPoll(p, (ULONG)n, ms);
+    if (r == SOCKET_ERROR) return -net_win_err(WSAGetLastError());
+    for (int64_t i = 0; r > 0 && i < n; i++) if (p[i].revents) return (int32_t)i + 1;
+    return 0;
+}
+
 /* Windows has no epoll loop, so no socket is watched on one: http::serve's
    completion loop doesn't watch outbound sockets yet. */
 void net_loop_bind(int32_t ep) { (void)ep; }
