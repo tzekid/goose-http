@@ -1,0 +1,44 @@
+== ws
+echo: open, protocol ""
+  the session holds no connection: true
+  text "héllo"
+  binary 200000 203
+  the same bytes: true
+  close 4000 "bye"
+  send after: true
+chat: open, protocol "chat"
+  closed by the client: 0 1000
+refused: failed: websocket, status 403
+a key of the program's: failed: header, status 0
+== wss
+echo: open, protocol ""
+  the session holds no connection: true
+  text "héllo"
+  binary 200000 203
+  the same bytes: true
+  close 4000 "bye"
+  send after: true
+chat: open, protocol "chat"
+  closed by the client: 0 1000
+refused: failed: websocket, status 403
+a key of the program's: failed: header, status 0
+== a peer of the test's
+/frag: open, protocol ""
+  text "hello"
+  close 1000 ""
+  closed: true
+/masked: open, protocol ""
+  failed: websocket false
+  closed: true
+/utf8: open, protocol ""
+  failed: websocket false
+  closed: true
+/badaccept: failed: websocket, status 101
+/ext: failed: websocket, status 101
+/report: open, protocol ""
+  text "frag: op 10 x; close op 8 code 1000
+/masked: close op 8 code 1002
+/utf8: close op 8 code 1007
+"
+  close 1000 ""
+  closed: true
