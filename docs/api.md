@@ -752,7 +752,7 @@ A request that fails returns status 0 and an `http::Error`, whose `call` names t
 | `call` | When |
 |---|---|
 | `url` | The URL isn't `http://` or `https://` with a host, or has a user or a bad port |
-| `header` | A field name isn't a token, a value holds a control byte such as CR or LF, or the block set `Host`, `Content-Length`, `Transfer-Encoding`, or `Connection` |
+| `header` | A field name isn't a token, a value holds a control byte such as CR or LF, or the block set `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, or `Expect` |
 | `body` | The block set a second body |
 | `resolve`, `connect`, `send`, `recv` | The socket's, with its code, as [on a thread without a loop](#on-a-thread-without-a-loop) |
 | `tls` | The handshake failed, such as for a certificate the session doesn't trust, or a TLS record did; `tls::error_text()` says why |
