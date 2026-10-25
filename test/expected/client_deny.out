@@ -1,0 +1,49 @@
+== classes
+8.8.8.8 0
+2606:4700::1111 0
+172.32.0.1 0
+100.128.0.1 0
+127.0.0.1 1
+127.255.255.254 1
+0.0.0.0 1
+::1 1
+:: 1
+10.1.2.3 2
+172.16.0.1 2
+172.31.255.255 2
+192.168.1.1 2
+100.64.0.1 2
+fc00::1 2
+fd12:3456::1 2
+169.254.169.254 4
+fe80::1 4
+224.0.0.1 8
+255.255.255.255 8
+240.0.0.1 8
+192.0.2.1 8
+198.18.0.1 8
+198.51.100.7 8
+203.0.113.9 8
+ff02::1 8
+2001:db8::1 8
+2001::1 8
+fec0::1 8
+100::1 8
+::a00:1 8
+::ffff:127.0.0.1 1
+::ffff:10.0.0.1 2
+64:ff9b::a9fe:a9fe 4
+2002:7f00:1:: 1
+2002:0808:0808:: 0
+== connect
+127.0.0.1, non-public: connect true
+127.0.0.1, private and link-local: connected
+::ffff:127.0.0.1, loopback: connect true
+the name LOCALHOST, loopback: connect true
+a Unix socket, loopback: connect true
+a Unix socket, private: connected
+== session
+no deny: 200 ok
+deny, the open connection not reused: connect true
+a redirect to 10.0.0.1: connect true
+via a Unix socket: connect true
