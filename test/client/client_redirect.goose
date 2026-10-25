@@ -23,6 +23,7 @@ fn route(name: const u8[:]) -> i32, const u8[:] {
     if name == "dots" { return 302, "./a/../../echo/./x/.."; }
     if name == "other" { return 307, "http://other.example/echo"; }
     if name == "same" { return 307, "//localhost/echo"; }
+    if name == "upper" { return 302, "HTTP://localhost/echo?upper"; }
     if name == "loop" { return 302, "/r/loop"; }
     if name == "down" { return 302, "http://localhost/echo"; }
     if name == "ftp" { return 302, "ftp://localhost/echo"; }
@@ -137,6 +138,7 @@ fn main() {
     send(session, "GET", "http://localhost/r/dots");
     send(session, "GET", "http://localhost/r/other");
     send(session, "GET", "http://localhost/r/same");
+    send(session, "GET", "http://localhost/r/upper");
     send(session, "GET", "http://localhost/r/none");
 
     print("== refused");
