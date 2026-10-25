@@ -113,10 +113,9 @@ fn ws_connect<F>(s: Session&, url: const u8[:]) -> WsClient, Error {
     var end = 0;
     while end == 0 {
         let n, got = take(s, buf, until);
-        guard got.code == 0 && n > 0 && !expired(until) else {
+        guard got.code == 0 && n > 0 else {
             hangup(s);
-            return ws, if got.code != 0 { got } else if n == 0 { client_error("response") }
-                       else { Error { call: "recv", code: ETIMEDOUT } };
+            return ws, if got.code != 0 { got } else { client_error("response") };
         }
         raw.append(buf[..n]);
         eol = line_end(raw, 0);
@@ -124,6 +123,10 @@ fn ws_connect<F>(s: Session&, url: const u8[:]) -> WsClient, Error {
         guard eol >= 0 && end >= 0 && (end > 0 || raw.len <= MAX_RESPONSE_HEAD) else {
             hangup(s);
             return ws, client_error("response");
+        }
+        guard end > 0 || !expired(until) else {
+            hangup(s);
+            return ws, Error { call: "recv", code: ETIMEDOUT };
         }
     }
     let status = raw[..eol - 2];
