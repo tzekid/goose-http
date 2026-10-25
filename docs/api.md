@@ -759,6 +759,38 @@ A request that fails returns status 0 and an `http::Error`, whose `call` names t
 | `response` | The response is malformed, or its body is past `max_body` |
 | `redirect` | A redirect past `Session.redirects`, from `https://` to `http://`, or to a `Location` that isn't an `http://` or `https://` URL |
 
+A body too large to hold, or one to use as it comes, is read in pieces, through a buffer
+of the program's: `http::begin` sends the request, `http::response` reads the response's
+head, `http::read` its body, and `http::end` lets the connection go. Shown in
+`test/client/client_stream.goose`.
+
+```rust
+var x, err = http::begin(session, "GET", "https://example.com/backup.tar") { req =>
+    http::bearer(req, api_key);
+};
+if err.code == 0 { err = http::response(session, x); }   // x.status, x.fields
+var buf: u8[65536] = [0; 65536];
+while err.code == 0 {
+    let n, e = http::read(session, x, buf);   // 0: the body has ended
+    err = e;
+    if n == 0 { break; }
+    write_out(buf[..n]);
+}
+http::end(session, x);
+```
+
+| Call | Does |
+|---|---|
+| `http::begin(s, method, url) { req => ... }` | Sends the request, as `http::request` does, and returns an `http::ClientExchange` and an `http::Error` once it's sent. It doesn't follow redirects |
+| `http::response(s, x) -> Error` | Reads the response's head into `x.status` and `x.fields`, skipping up to 16 1xx before it |
+| `http::read(s, x, buf) -> i64, Error` | Reads the next bytes of the body into `buf`, and the head first if `response` hasn't: how many, or 0 once the body has ended; a chunked body's trailer fields are then in `x.trailers`. Data whose length the framing knows goes straight into `buf` |
+| `http::end(s, x)` | Keeps the connection for the session's next request only if the response was read whole, its body didn't end with the connection, and the server didn't ask to close it; otherwise closes it, so an unread body is never taken for the next response |
+
+`Session.max_body` limits the body as sent, -1 for none, and `Session.total_ms` the
+exchange as a whole, from `begin` to the body's end. A body past the limit, one cut
+short, and any failure close the connection, and the calls after it fail with
+`response`. `http::request` and its forms are this, with the body collected.
+
 The calls are compositions of parts a program can call on its own:
 `http::parse_url(url) -> Url, bool`, `http::write_request(out, method, u, req)`, which
 appends the request's bytes, `http::read_response(raw, closed, head, max_body, r)`, which

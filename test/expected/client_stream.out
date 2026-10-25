@@ -1,0 +1,14 @@
+5 MB: 0, true, the same bytes true, at most 4096 a read, held at most 16 KB true
+  kept: true
+chunked: 0, "hello world, again", trailers "X-Sum: 17
+X-More: yes
+"
+  kept: true
+after two 1xx: 200 "final"
+to the close: 0 "until the end"
+  kept: false
+half read: 10000, kept false
+  the next: connection 3
+cut short: response, kept false
+past max_body: response true
+2 MB over TLS: 0, true, the same bytes true, at most 3000 a read
