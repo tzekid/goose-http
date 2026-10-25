@@ -859,6 +859,37 @@ request on the session's connection, `http::resolve_url(base, location, out)`, w
 writes the URL a `Location` names from a `Url`, and `http::follow(s, method, url, req)`,
 which carries a request and its redirects.
 
+### Compressed responses
+
+The module `http.client_decoding` decodes a response's body as its `Content-Encoding`
+says, `gzip` or `deflate`, with goose-compress's decoder, which a program that imports it
+declares in its root file. Shown in `test/client/client_decoding.goose`.
+
+```rust
+import compress from "github.com/tzekid/goose-compress@0d31e4f6360f9ac6e2a3464bb2457f527d6e27cc";
+import http.client_decoding;
+
+let r, err = http::get(session, url) { req => http::accept_compressed(req); };
+if err.code == 0 { err = http::decode_body(r); }   // r.body is decoded, its fields as sent
+```
+
+| Call | Does |
+|---|---|
+| `http::accept_compressed(req)` | Adds `Accept-Encoding: gzip, deflate`, the codings the module decodes, and no other |
+| `http::decode_body(r, limit)` | Decodes `r.body` in place, into at most `limit` bytes, 64 MB by default; a body that isn't compressed stays as it is |
+| `http::read_decoded(s, x, b, out, most) -> i64, Error` | `http::read`, decoded: appends at most `most` decoded bytes of `x`'s body to `out`, with `b`, an `http::BodyDecoder { .. }`, holding the decoder and its `limit`; 0 once the body and its stream have ended |
+
+- `deflate` is zlib's stream, as HTTP has it; a raw DEFLATE stream isn't guessed at. A
+  gzip body may hold several members. Another coding, such as `br` or `zstd`, and a
+  chain of codings fail with call `response`.
+- The body's limits are two: `Session.max_body` for the bytes as sent, and the decoder's
+  for the bytes it makes, since a compressed body may grow a thousandfold. A stream past
+  its limit, one whose CRC-32, Adler-32, or length is wrong, one cut short, and one with
+  more of the body after it fail with call `response`, and `read_decoded` closes the
+  connection.
+- The response's fields stay as received: `Content-Encoding` and `Content-Length`
+  describe the body as sent.
+
 ### A WebSocket client
 
 The module `http.websocket_client` opens WebSockets (RFC 6455) to `ws://` and `wss://`
