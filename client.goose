@@ -75,8 +75,11 @@ struct Session {
     // deny and proxy it was opened with, after them.
     peer: u8[..600],
     // Whether the connection is in an exchange that begin started and end
-    // hasn't ended, so that it isn't kept for another request.
+    // hasn't ended, so that it isn't reused or kept for another request; and
+    // which connection it is, one more each time the session opens or takes
+    // one, so that an exchange begun on an earlier one doesn't touch it.
     busy: bool = false,
+    serial: i64 = 0,
     // The connections kept for other origins, the oldest first.
     idle: IdleConnection[..IDLE_MAX],
 }
@@ -555,6 +558,8 @@ struct ClientExchange {
     // body data, held[run..run_end], that a smaller buf didn't take.
     run: i64 = 0,
     run_end: i64 = 0,
+    // The session's serial for the connection the exchange began on.
+    serial: i64 = 0,
     held: u8[>..],
 }
 
@@ -590,6 +595,7 @@ fn begin_by(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     }
     var e = open(s, u, until);
     guard e.code == 0 else { return x, e; }
+    x.serial = s.serial;
     e = put(s, wire, until);
     guard e.code == 0 else { return x, failed(s, x, e); }
     s.busy = true;
@@ -644,7 +650,7 @@ fn await_continue(s: Session&, x: ClientExchange&) -> Error {
 // "body", once the server has answered before the body, which x.status then
 // is, and response returns. A failure closes the connection.
 fn write(s: Session&, x: ClientExchange&, data: const u8[:]) -> Error {
-    guard !x.failed else { return client_error("response"); }
+    guard current(s, x) else { return client_error("response"); }
     guard !x.rejected else { return Error { call: "body", code: EPIPE }; }
     guard x.sending else { return client_error("body"); }
     guard data.len > 0 else { return no_error(); }
@@ -670,7 +676,7 @@ fn write(s: Session&, x: ClientExchange&, data: const u8[:]) -> Error {
 // closing the connection, where one wasn't. Nothing to do once the server
 // has answered before the body.
 fn end_body(s: Session&, x: ClientExchange&) -> Error {
-    guard !x.failed else { return client_error("response"); }
+    guard current(s, x) else { return client_error("response"); }
     guard x.sending else { return no_error(); }
     x.sending = false;
     if x.upload >= 0 {
@@ -683,7 +689,7 @@ fn end_body(s: Session&, x: ClientExchange&) -> Error {
 // Reads the response's head into x.status and x.fields, skipping a 1xx
 // before it, up to 16 of them. A failure closes the connection.
 fn response(s: Session&, x: ClientExchange&) -> Error {
-    guard !x.failed else { return client_error("response"); }
+    guard current(s, x) else { return client_error("response"); }
     guard !x.headed else { return no_error(); }
     guard !x.sending else { return client_error("body"); }
     var buf: u8[16384] = [0; 16384];
@@ -736,7 +742,7 @@ fn read(s: Session&, x: ClientExchange&, buf: u8[:]) -> i64, Error {
         let e = response(s, x);
         guard e.code == 0 else { return 0, e; }
     }
-    guard !x.failed else { return 0, client_error("response"); }
+    guard current(s, x) else { return 0, client_error("response"); }
     guard buf.len > 0 else { return 0, no_error(); }
     var more: u8[16384] = [0; 16384];
     loop {
@@ -823,6 +829,10 @@ fn took(s: Session&, x: ClientExchange&, n: i64) -> bool {
 // its body didn't end with it; otherwise it's closed, so a response left
 // unread is never read as the next one's.
 fn end(s: Session&, x: ClientExchange&) {
+    guard x.serial == s.serial else {
+        x.failed = true;
+        return;
+    }
     let connection, has = field_in(x.fields, "Connection");
     let keep = x.done && !x.failed && !x.to_close && !x.last && x.held.len == 0 && !(has && has_close(connection));
     if !keep { hangup(s); }
@@ -839,9 +849,17 @@ fn has_close(value: const u8[:]) -> bool {
 
 // Closes the connection after a failure of x's, and returns the failure.
 fn failed(s: Session&, x: ClientExchange&, e: Error) -> Error {
-    hangup(s);
+    if x.serial == s.serial { hangup(s); }
     x.failed = true;
     return e;
+}
+
+// Whether x may go on: it hasn't failed, and its connection is still the
+// session's. A request begun on the session since, before x ended, took
+// the connection, and x fails without touching the new one.
+fn current(s: const Session&, x: ClientExchange&) -> bool {
+    if x.serial != s.serial { x.failed = true; }
+    return !x.failed;
 }
 
 // Removes the first n bytes of b.
@@ -870,7 +888,7 @@ fn open(s: Session&, u: Url, until: i64 = -1, tunnel: bool = false) -> Error {
     let through = proxied && (u.secure || tunnel);
     format(peer, if u.secure { "https://" } else { "http://" }, u.host, ":", u.port, " ", s.deny, " ", s.proxy,
            if through { " tunnel" } else { "" });
-    if s.s.fd >= 0 && s.peer == peer {
+    if s.s.fd >= 0 && s.peer == peer && !s.busy {
         // A connection the server has closed, or that holds bytes nothing
         // asked for, such as TLS's close_notify, isn't reused.
         var probe: u8[1] = [0];
@@ -878,7 +896,10 @@ fn open(s: Session&, u: Url, until: i64 = -1, tunnel: bool = false) -> Error {
         hangup(s);
     }
     park(s);
-    if take_idle(s, peer) { return no_error(); }
+    if take_idle(s, peer) {
+        s.serial++;
+        return no_error();
+    }
     var p = Proxy { .. };
     if proxied {
         guard s.deny == 0 else { return client_error("proxy"); }
@@ -910,6 +931,7 @@ fn open(s: Session&, u: Url, until: i64 = -1, tunnel: bool = false) -> Error {
         }
     }
     s.peer = peer;
+    s.serial++;
     return no_error();
 }
 

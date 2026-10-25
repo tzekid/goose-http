@@ -820,7 +820,10 @@ http::end(session, x);
 `Session.max_body` limits the body as sent, -1 for none, and `Session.total_ms` the
 exchange as a whole, from `begin` to the body's end. A body past the limit, one cut
 short, and any failure close the connection, and the calls after it fail with
-`response`. `http::request` and its forms are this, with the body collected.
+`response`. `http::request` and its forms are this, with the body collected. A session
+carries one exchange at a time: a request begun on it before `end` ends the one before
+takes a connection of its own, and the earlier exchange's calls then fail with
+`response`, leaving the new connection alone.
 
 A request's body can be written in pieces too, so that it needn't be held whole: the
 block declares it with `http::stream(req, media, length)`, its `Content-Length`, or -1

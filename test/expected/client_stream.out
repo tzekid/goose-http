@@ -11,4 +11,5 @@ half read: 10000, kept false
   the next: connection 3
 cut short: response, kept false
 past max_body: response true
+begun again before the end: the second on connection 6, the first response, the third on connection 6
 2 MB over TLS: 0, true, the same bytes true, at most 3000 a read
