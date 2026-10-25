@@ -8,6 +8,9 @@
    failure, where code is errno translated to its Linux number (net_err), the
    values src/sys.goose names. None of them keeps a pointer into Goose memory
    after it returns. */
+/* macOS declares IPV6_DONTFRAG, which the HTTP/3 socket sets, only for RFC
+   3542's API, which must be asked for before the first include. */
+#define __APPLE_USE_RFC_3542
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
