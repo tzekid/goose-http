@@ -711,7 +711,11 @@ http::free(session);
 A `ClientResponse` holds `status`, `fields`, its header field lines, each ending in CRLF,
 and `body`. `Session.max_body`, 16 MB by default, is the most body a response may have,
 as sent. `Session.via` is an address to connect to in place of the URL's host and port,
-such as `unix:/run/app.sock`; TLS still checks the URL's host.
+such as `unix:/run/app.sock`; TLS still checks the URL's host. `Session.total_ms`, -1 by
+default (none), limits a request as a whole, from its connect to its response's last
+byte, so a server that sends a byte now and then can't hold it past the limit as it can
+past `ms`; a request that runs out fails with `ETIMEDOUT`, its `call` the step it was
+in, and its connection is closed. Neither limit bounds a host name's lookup.
 
 - A session keeps its connection, and reuses it for the next request to the same scheme,
   host, and port, unless the server answered with `Connection: close` or has closed it
