@@ -30,12 +30,11 @@ import socket;
 // A client's settings and its open connection, which the next request to the
 // same scheme, host, and port reuses.
 struct Session {
-    // The limit in milliseconds on each wait: the connect, a send, a read
-    // (-1: none). A host name's lookup isn't bounded by it.
+    // The limit in milliseconds on each wait: a host name's lookup and the
+    // connect together, a send, a read (-1: none).
     ms: i64 = 30000,
-    // The limit in milliseconds on a request as a whole, from its connect to
-    // its response's last byte, however steadily bytes arrive (-1: none). A
-    // host name's lookup isn't bounded by it either.
+    // The limit in milliseconds on a request as a whole, from its lookup to
+    // its response's last byte, however steadily bytes arrive (-1: none).
     total_ms: i64 = -1,
     // How long a request that asked for 100 Continue (expect_continue)
     // waits for it before it sends its body anyway (-1: until an answer).
