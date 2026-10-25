@@ -11,6 +11,7 @@ GET http://localhost/r/query: 200: GET /r/query?q=1 host=localhost auth=Bearer k
 GET http://localhost/r/dots: 200: GET /echo/ host=localhost auth=Bearer k-1 cookie=id=7 key=v type= body=
 GET http://localhost/r/other: 200: GET /echo host=other.example auth= cookie= key=v type= body=
 GET http://localhost/r/same: 200: GET /echo host=localhost auth=Bearer k-1 cookie=id=7 key=v type= body=
+GET http://localhost/r/upper: 200: GET /echo?upper host=localhost auth=Bearer k-1 cookie=id=7 key=v type= body=
 GET http://localhost/r/none: 302: 
 == refused
 GET http://localhost/r/loop: failed: redirect, status 0

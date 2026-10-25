@@ -228,7 +228,10 @@ fn resolve_url(base: Url, location: const u8[:], out: u8[>..]&) -> bool {
     let colon = find(location, ":");
     let delim = find_any(location, REFERENCE_DELIM);
     if colon > 0 && (delim < 0 || colon < delim) {
-        out.append(location);
+        // A scheme is in any case (RFC 3986 §3.1); parse_url takes it in
+        // lower case.
+        for c in location[..colon] { out.push(if c >= 'A' && c <= 'Z' { c + 32 } else { c }); }
+        out.append(location[colon..]);
         return true;
     }
     let scheme = if base.secure { "https:" } else { "http:" };
