@@ -768,6 +768,48 @@ request on the session's connection, `http::resolve_url(base, location, out)`, w
 writes the URL a `Location` names from a `Url`, and `http::follow(s, method, url, req)`,
 which carries a request and its redirects.
 
+### A WebSocket client
+
+The module `http.websocket_client` opens WebSockets (RFC 6455) to `ws://` and `wss://`
+URLs, blocking, as `http.client` does. A program that imports it declares goose-tls and
+goose-hash in its root file. Shown in `test/websocket/ws_client.goose`.
+
+```rust
+import http from "github.com/kaitk/goose-http@<tag>";
+import tls from "github.com/kaitk/goose-tls@v0.0.6";
+import hash from "github.com/kaitk/goose-hash@v0.0.4";
+import http.websocket_client;
+
+var session = http::session();
+var ws, err = http::ws_connect(session, "wss://example.com/feed") { req =>
+    http::bearer(req, token);
+    http::header(req, "Sec-WebSocket-Protocol", "feed.v2");
+};
+guard err.code == 0 else { /* ws.status: what the server answered */ }
+http::ws_send(ws, http::WS_TEXT, "subscribe");
+var message: u8[>..] = [];
+let op, e = http::ws_receive(ws, message);   // WS_TEXT, WS_BINARY, or WS_CLOSE
+http::ws_close(ws);
+http::free(session);
+```
+
+| Call | Does |
+|---|---|
+| `http::ws_connect(s, url) { req => ... }` | Sends the handshake, with what the block added, and returns the `http::WsClient` and an `http::Error`. The session's `ms`, `total_ms` up to the answer, `deny`, `via`, and TLS trust apply; a redirect isn't followed. Once open, the connection is the WebSocket's, and the session holds none, but keeps the TLS context, which it must outlive |
+| `http::ws_send(ws, op, data)` | Sends a message, `WS_TEXT` or `WS_BINARY`, in one frame masked with a key from the OS's secure random source; `EPIPE` once the WebSocket has closed |
+| `http::ws_receive(ws, out) -> u8, Error` | Waits for the next message and puts it in `out`, answering pings on the way: its opcode, or `WS_CLOSE` once the server has closed, with its reason in `out` and its code in `ws.close_code`. `ETIMEDOUT` after `ws.conn.ms` leaves the WebSocket as it was |
+| `http::ws_close(ws, code, reason)` | Sends a Close, reads until the server's, and closes the connection |
+
+- A handshake whose answer isn't 101, or lacks the right `Sec-WebSocket-Accept`,
+  `Upgrade`, or `Connection`, or names an extension or a subprotocol not offered, fails
+  with call `websocket` and closes the connection; `ws.status` is the answer's status. A
+  block that sets `Upgrade` or a `Sec-WebSocket-` field the handshake writes fails it
+  with call `header`.
+- A message is joined from its fragments, up to `ws.limit` bytes, 1 MB by default. A
+  frame the protocol forbids, such as a masked one, fails the WebSocket with a Close of
+  1002, text that isn't UTF-8 with 1007, and a longer message with 1009, and
+  `ws_receive` returns call `websocket`. No extension is offered.
+
 ## The store
 
 Used by the benchmarks' REST server, `bench/rest/goose/rest.goose`.
