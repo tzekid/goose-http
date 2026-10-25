@@ -45,7 +45,8 @@ struct Session {
     // DENY_NON_PUBLIC keeps them to public addresses. Every redirect's
     // address is checked too. With via, via's address is the one checked.
     deny: i64 = 0,
-    // The most body a response may have, in bytes as sent.
+    // The most body a response may have, in bytes as sent (-1: none, for a
+    // body read in pieces).
     max_body: i64 = 16 << 20,
     // An address to connect to in place of the URL's host and port, such as
     // "unix:/run/app.sock"; TLS still checks the URL's host.
@@ -382,50 +383,258 @@ fn exchange(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     return exchange_by(s, method, url, req, deadline(s.total_ms));
 }
 
-// exchange, ending by until, the clock's time (-1: no limit but each wait's).
+// exchange, ending by until, the clock's time (-1: no limit but each wait's):
+// begin, response, read to the body's end, and end.
 fn exchange_by(s: Session&, method: const u8[:], url: const u8[:], req: const ClientRequest&, until: i64) -> ClientResponse, Error {
     var r = ClientResponse { .. };
-    let u, ok = parse_url(url);
-    guard ok else { return r, client_error("url"); }
-    guard req.refused.len == 0 else { return r, client_error(if req.refused == "body" { "body" } else { "header" }); }
-    var wire: u8[>..] = [];
-    write_request(wire, method, u, req);
-
-    var e = open(s, u, until);
+    var x, e = begin_by(s, method, url, req, until);
     guard e.code == 0 else { return r, e; }
-    e = put(s, wire, until);
-    guard e.code == 0 else {
-        hangup(s);
-        return r, e;
-    }
-    let head = method == "HEAD";
-    var raw: u8[>..] = [];
+    e = response(s, x);
+    guard e.code == 0 else { return r, e; }
     var buf: u8[16384] = [0; 16384];
     loop {
-        let n, got = take(s, buf, until);
-        guard got.code == 0 else {
-            hangup(s);
-            r.status = 0;
-            return r, got;
-        }
-        if n > 0 { raw.append(buf[..n]); }
-        let read = read_response(raw, n == 0, head, s.max_body, r);
-        if read == READ_COMPLETE || read == READ_AT_CLOSE {
-            let connection, has = header(r, "Connection");
-            if read == READ_AT_CLOSE || (has && same_name(connection, "close")) { hangup(s); }
-            return r, no_error();
-        }
-        guard read == INCOMPLETE && n > 0 else {
-            hangup(s);
-            r.status = 0;
-            return r, client_error("response");
-        }
-        guard !expired(until) else {
-            hangup(s);
-            r.status = 0;
-            return r, Error { call: "recv", code: ETIMEDOUT };
-        }
+        let n, got = read(s, x, buf);
+        guard got.code == 0 else { return ClientResponse { .. }, got; }
+        if n == 0 { break; }
+        r.body.append(buf[..n]);
     }
+    r.status = x.status;
+    r.fields.append(x.fields);
+    end(s, x);
+    return r, no_error();
+}
+
+// A request whose response is read in pieces, on the session's connection:
+// begin sends the request, response reads the response's head, read its body
+// as it comes, and end lets the connection go.
+struct ClientExchange {
+    // The response's status and header field lines, each ending in CRLF,
+    // once response has read them; then a chunked body's trailer field
+    // lines, once read has come to its end.
+    status: i64 = 0,
+    fields: u8[..8192],
+    trailers: u8[..8192],
+    // The clock's time by which the request must end (-1: none), from
+    // Session.total_ms at begin.
+    until: i64 = -1,
+    // What of the body is still to come, as the server's read_body reads a
+    // request's.
+    body: BodyReader = BodyReader.None,
+    chunked: bool = false,
+    // A body that ends when the connection does, which can't be reused.
+    to_close: bool = false,
+    // The body's bytes as sent so far, which Session.max_body limits.
+    taken: i64 = 0,
+    head_only: bool = false,
+    headed: bool = false,
+    // The response has been read whole; or a failure closed the connection.
+    done: bool = false,
+    failed: bool = false,
+    // Bytes read past what was used: framing not yet whole, and a run of
+    // body data, held[run..run_end], that a smaller buf didn't take.
+    run: i64 = 0,
+    run_end: i64 = 0,
+    held: u8[>..],
+}
+
+// Sends the request method makes to url, after F has added to it, as
+// request does, and returns once it's sent. A failure is an Error as a
+// request's, and the connection is closed then. begin doesn't follow
+// redirects: resolve_url gives the URL a Location names.
+fn begin<F>(s: Session&, method: const u8[:], url: const u8[:]) -> ClientExchange, Error {
+    var lines: u8[>..] = [];
+    var payload: u8[>..] = [];
+    var req = ClientRequest { lines: lines, payload: payload };
+    F(&req);
+    return begin_by(s, method, url, req, deadline(s.total_ms));
+}
+
+fn begin(s: Session&, method: const u8[:], url: const u8[:]) -> ClientExchange, Error {
+    return begin(s, method, url) { req => };
+}
+
+// begin for a request built already, which must end by until.
+fn begin_by(s: Session&, method: const u8[:], url: const u8[:], req: const ClientRequest&, until: i64) -> ClientExchange, Error {
+    var x = ClientExchange { until: until, head_only: method == "HEAD", .. };
+    let u, ok = parse_url(url);
+    guard ok else { return x, client_error("url"); }
+    guard req.refused.len == 0 else { return x, client_error(if req.refused == "body" { "body" } else { "header" }); }
+    var wire: u8[>..] = [];
+    write_request(wire, method, u, req);
+    var e = open(s, u, until);
+    guard e.code == 0 else { return x, e; }
+    e = put(s, wire, until);
+    guard e.code == 0 else { return x, failed(s, x, e); }
+    return x, no_error();
+}
+
+// Reads the response's head into x.status and x.fields, skipping a 1xx
+// before it, up to 16 of them. A failure closes the connection.
+fn response(s: Session&, x: ClientExchange&) -> Error {
+    guard !x.failed else { return client_error("response"); }
+    guard !x.headed else { return no_error(); }
+    var buf: u8[16384] = [0; 16384];
+    var interim = 0;
+    loop {
+        let h, verdict = response_head(x.held, false);
+        if verdict == READ_COMPLETE && h.status < 200 {
+            interim++;
+            guard interim <= 16 else { return failed(s, x, client_error("response")); }
+            drop_front(x.held, h.end);
+            continue;
+        }
+        if verdict == READ_COMPLETE {
+            x.status = h.status;
+            x.fields.append(x.held[h.eol..h.end - 2]);
+            drop_front(x.held, h.end);
+            x.headed = true;
+            x.chunked = h.chunked;
+            guard s.max_body < 0 || h.length <= s.max_body else { return failed(s, x, client_error("response")); }
+            if x.head_only || h.status == 204 || h.status == 304 || h.length == 0 && !h.chunked {
+                x.done = true;
+            } else if h.chunked {
+                x.body = BodyReader.ChunkSize;
+            } else if h.length > 0 {
+                x.body = BodyReader.Length { left: h.length };
+            } else {
+                x.body = BodyReader.Raw;
+                x.to_close = true;
+            }
+            return no_error();
+        }
+        guard verdict == INCOMPLETE else { return failed(s, x, client_error("response")); }
+        guard !expired(x.until) else { return failed(s, x, Error { call: "recv", code: ETIMEDOUT }); }
+        let n, e = take(s, buf, x.until);
+        guard e.code == 0 else { return failed(s, x, e); }
+        guard n > 0 else { return failed(s, x, client_error("response")); }
+        x.held.append(buf[..n]);
+    }
+}
+
+// Reads the next bytes of the response's body into buf, reading its head
+// first if response hasn't: how many, or 0 once the body has ended, when
+// x.trailers holds a chunked body's trailer fields. Bytes the server sends
+// are read straight into buf where the body's framing allows. A body past
+// Session.max_body, as sent, one cut short, and a failure close the
+// connection, and so does running past Session.total_ms, however steadily
+// the bytes come.
+fn read(s: Session&, x: ClientExchange&, buf: u8[:]) -> i64, Error {
+    if !x.headed {
+        let e = response(s, x);
+        guard e.code == 0 else { return 0, e; }
+    }
+    guard !x.failed else { return 0, client_error("response"); }
+    guard buf.len > 0 else { return 0, no_error(); }
+    var more: u8[16384] = [0; 16384];
+    loop {
+        if x.run < x.run_end {
+            let k = min(x.run_end - x.run, buf.len);
+            copy_into(buf[..k], x.held[x.run..x.run + k]);
+            x.run += k;
+            if x.run == x.run_end {
+                drop_front(x.held, x.run_end);
+                x.run = 0;
+                x.run_end = 0;
+            }
+            return k, no_error();
+        }
+        guard !x.done else { return 0, no_error(); }
+        if x.held.len > 0 {
+            let d0, d1, verdict = read_body(x.held, x.body);
+            guard verdict != 400 else { return 0, failed(s, x, client_error("response")); }
+            if verdict == 200 {
+                let ended = match x.body { None => true, _ => false };
+                if ended && x.chunked {
+                    // The trailer section, its blank line included.
+                    guard d1 - 2 - d0 <= 8192 else { return 0, failed(s, x, client_error("response")); }
+                    x.trailers.append(x.held[d0..d1 - 2]);
+                }
+                x.done = ended;
+                if ended && x.chunked || d0 == d1 {
+                    drop_front(x.held, d1);
+                } else {
+                    guard took(s, x, d1 - d0) else { return 0, client_error("response"); }
+                    x.run = d0;
+                    x.run_end = d1;
+                }
+                continue;
+            }
+        } else {
+            // With nothing held, data whose length the framing knows goes
+            // straight into buf.
+            let want = match x.body {
+                Length l => min(l.left, buf.len),
+                ChunkData d => min(d.left, buf.len),
+                Raw => buf.len,
+                _ => 0,
+            };
+            if want > 0 {
+                guard !expired(x.until) else { return 0, failed(s, x, Error { call: "recv", code: ETIMEDOUT }); }
+                let n, e = take(s, buf[..want], x.until);
+                guard e.code == 0 else { return 0, failed(s, x, e); }
+                if n == 0 {
+                    guard x.to_close else { return 0, failed(s, x, client_error("response")); }
+                    x.done = true;
+                    return 0, no_error();
+                }
+                read_body(buf[..n], x.body);
+                if match x.body { None => true, _ => false } { x.done = true; }
+                guard took(s, x, n) else { return 0, client_error("response"); }
+                return n, no_error();
+            }
+        }
+        guard !expired(x.until) else { return 0, failed(s, x, Error { call: "recv", code: ETIMEDOUT }); }
+        let n, e = take(s, more, x.until);
+        guard e.code == 0 else { return 0, failed(s, x, e); }
+        if n == 0 {
+            guard x.to_close && x.held.len == 0 else { return 0, failed(s, x, client_error("response")); }
+            x.done = true;
+            continue;
+        }
+        x.held.append(more[..n]);
+    }
+}
+
+// Counts n more body bytes against Session.max_body, and fails x past it.
+fn took(s: Session&, x: ClientExchange&, n: i64) -> bool {
+    x.taken += n;
+    guard s.max_body < 0 || x.taken <= s.max_body else {
+        failed(s, x, client_error("response"));
+        return false;
+    }
+    return true;
+}
+
+// Lets the connection go: it stays for the session's next request only once
+// the response has been read whole, the server hasn't asked to close it, and
+// its body didn't end with it; otherwise it's closed, so a response left
+// unread is never read as the next one's.
+fn end(s: Session&, x: ClientExchange&) {
+    let connection, has = field_in(x.fields, "Connection");
+    let keep = x.done && !x.failed && !x.to_close && x.held.len == 0 && !(has && has_close(connection));
+    if !keep { hangup(s); }
+    x.failed = !keep || x.failed;
+}
+
+// Whether a Connection field's value lists close.
+fn has_close(value: const u8[:]) -> bool {
+    var found = false;
+    each_split(value, ',') { if same_name(trim(it), "close") { found = true; } };
+    return found;
+}
+
+// Closes the connection after a failure of x's, and returns the failure.
+fn failed(s: Session&, x: ClientExchange&, e: Error) -> Error {
+    hangup(s);
+    x.failed = true;
+    return e;
+}
+
+// Removes the first n bytes of b.
+fn drop_front(b: u8[>..]&, n: i64) {
+    let left = b.len - n;
+    for i in left { b[i] = b[n + i]; }
+    b.resize(left);
 }
 
 // The limit on one wait of a request that must end by until (-1: none): the
@@ -546,6 +755,51 @@ let READ_MALFORMED = -1;
 // The most a response's status line and fields may take.
 let MAX_RESPONSE_HEAD = 8192;
 
+// A response's head, as response_head reads it: its status, the ends of its
+// status line and of its fields, after the blank line, and its body's
+// framing: a Content-Length, or -1, and whether it's chunked.
+struct ResponseHead { status: i64 = 0, eol: i64 = 0, end: i64 = 0, length: i64 = -1, chunked: bool = false }
+
+// Reads the head that rest starts with: READ_COMPLETE, INCOMPLETE until it
+// has all come, or READ_MALFORMED, for a status line or fields that don't
+// parse, a head past MAX_RESPONSE_HEAD, two Content-Lengths that differ, or a
+// Transfer-Encoding but chunked. closed says no more bytes will come.
+fn response_head(rest: const u8[:], closed: bool) -> ResponseHead, i64 {
+    var h = ResponseHead { .. };
+    let short = if closed || rest.len > MAX_RESPONSE_HEAD { READ_MALFORMED } else { INCOMPLETE };
+    let eol = line_end(rest, 0);
+    guard eol != 0 else { return h, short; }
+    guard eol > 0 else { return h, READ_MALFORMED; }
+    let status = rest[..eol - 2];
+    guard starts_with(status, "HTTP/1.") && status.len >= 12 && is_digit(status[7]) && status[8] == ' '
+    else { return h, READ_MALFORMED; }
+    let code, ok = parse_int(status[9..12]);
+    guard ok && is_digit(status[9]) && code >= 100 && code < 600 && (status.len == 12 || status[12] == ' ')
+    else { return h, READ_MALFORMED; }
+    let end = trailer_end(rest, eol);
+    guard end != 0 else { return h, short; }
+    guard end > 0 && end <= MAX_RESPONSE_HEAD else { return h, READ_MALFORMED; }
+    let fields = rest[eol..end - 2];
+    var pos = 0;
+    while pos < fields.len {
+        let name, value, next = field_at(fields, pos);
+        pos = next;
+        if same_name(name, "Content-Length") {
+            let n, valid = parse_int(value);
+            guard valid && value.len > 0 && is_digit(value[0]) && (h.length < 0 || h.length == n)
+            else { return h, READ_MALFORMED; }
+            h.length = n;
+        } else if same_name(name, "Transfer-Encoding") {
+            guard same_name(value, "chunked") else { return h, READ_MALFORMED; }
+            h.chunked = true;
+        }
+    }
+    h.status = code;
+    h.eol = eol;
+    h.end = end;
+    return h, READ_COMPLETE;
+}
+
 // Reads an HTTP/1.1 response from raw into r: READ_COMPLETE, INCOMPLETE when
 // more bytes are needed, or READ_MALFORMED, also for a body past max_body as
 // sent. closed says the connection has ended, so a body with neither a
@@ -558,38 +812,14 @@ fn read_response(raw: const u8[:], closed: bool, head: bool, max_body: i64, r: C
         r.status = 0;
         r.fields.clear();
         let rest = raw[at..];
-        let short = if closed || rest.len > MAX_RESPONSE_HEAD { READ_MALFORMED } else { INCOMPLETE };
-        let eol = line_end(rest, 0);
-        guard eol != 0 else { return short; }
-        guard eol > 0 else { return READ_MALFORMED; }
-        let status = rest[..eol - 2];
-        guard starts_with(status, "HTTP/1.") && status.len >= 12 && is_digit(status[7]) && status[8] == ' '
-        else { return READ_MALFORMED; }
-        let code, ok = parse_int(status[9..12]);
-        guard ok && is_digit(status[9]) && code >= 100 && code < 600 && (status.len == 12 || status[12] == ' ')
-        else { return READ_MALFORMED; }
-        let end = trailer_end(rest, eol);
-        guard end != 0 else { return short; }
-        guard end > 0 && end <= MAX_RESPONSE_HEAD else { return READ_MALFORMED; }
-        let fields = rest[eol..end - 2];
-
-        var length = -1;
-        var chunked = false;
-        var pos = 0;
-        while pos < fields.len {
-            let name, value, next = field_at(fields, pos);
-            pos = next;
-            if same_name(name, "Content-Length") {
-                let n, valid = parse_int(value);
-                guard valid && value.len > 0 && is_digit(value[0]) && (length < 0 || length == n) else { return READ_MALFORMED; }
-                length = n;
-            } else if same_name(name, "Transfer-Encoding") {
-                guard same_name(value, "chunked") else { return READ_MALFORMED; }
-                chunked = true;
-            }
-        }
+        let h, verdict = response_head(rest, closed);
+        guard verdict == READ_COMPLETE else { return verdict; }
+        let code = h.status;
+        let end = h.end;
+        let length = h.length;
+        let chunked = h.chunked;
         r.status = code;
-        r.fields.append(fields);
+        r.fields.append(rest[h.eol..end - 2]);
 
         let body = rest[end..];
         if code < 200 {
