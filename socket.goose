@@ -145,15 +145,19 @@ let DENY_NON_PUBLIC = 15;
 // which connect to this host too; private 10.0.0.0/8, 172.16.0.0/12,
 // 192.168.0.0/16, the shared 100.64.0.0/10, and fc00::/7; link-local
 // 169.254.0.0/16 and fe80::/10; special multicast, reserved, documentation,
-// and benchmarking ranges, fec0::/10, and Teredo's 2001::/32. An IPv6 address
+// and benchmarking ranges, fec0::/10, Teredo's 2001::/32, and NAT64's
+// local-use 64:ff9b:1::/48. An IPv6 address
 // that holds an IPv4 one, IPv4-mapped, NAT64's 64:ff9b::/96, or 6to4's
 // 2002::/16, is the IPv4 address's class.
 fn address_class(ip: const u8[16]&) -> i64 {
     var zeros = 0;
     while zeros < 16 && ip[zeros] == 0 { zeros++; }
     if zeros == 10 && ip[10] == 0xff && ip[11] == 0xff { return ipv4_class(ip[12], ip[13], ip[14]); }
-    if ip[0] == 0 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b && zeros_in(ip[4..12]) {
-        return ipv4_class(ip[12], ip[13], ip[14]);
+    if ip[0] == 0 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b {
+        if zeros_in(ip[4..12]) { return ipv4_class(ip[12], ip[13], ip[14]); }
+        // NAT64's local-use 64:ff9b:1::/48 (RFC 8215) puts an IPv4 address
+        // where its prefix length says: special, rather than read it.
+        if ip[4] == 0 && ip[5] == 1 { return DENY_SPECIAL; }
     }
     if ip[0] == 0x20 && ip[1] == 0x02 { return ipv4_class(ip[2], ip[3], ip[4]); }
     if zeros >= 15 { return DENY_LOOPBACK; }
