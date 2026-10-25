@@ -100,7 +100,8 @@ fn ws_connect<F>(s: Session&, url: const u8[:]) -> WsClient, Error {
            "\r\nSec-WebSocket-Version: 13\r\n", req.lines, "\r\n");
 
     let until = deadline(s.total_ms);
-    var e = open(s, u, until);
+    // Through a proxy, a WebSocket goes in a tunnel, whatever its scheme.
+    var e = open(s, u, until, true);
     guard e.code == 0 else { return ws, e; }
     e = put(s, wire, until);
     guard e.code == 0 else {

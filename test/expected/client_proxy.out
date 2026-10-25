@@ -1,0 +1,7 @@
+http: 200 connection 1, request 1: GET http://origin.example/page?q=1 HTTP/1.1; proxy auth Basic dXNlcjpwQHNz; host origin.example; origin auth 
+http again: 200 connection 1, request 2: GET http://origin.example/again HTTP/1.1; proxy auth Basic dXNlcjpwQHNz; host origin.example; origin auth Bearer k-1
+redirected: 200 connection 2, request 1: GET http://other.example/landing HTTP/1.1; proxy auth Basic dXNlcjpwQHNz; host other.example; origin auth 
+https, tunneled: 200 secure /hello; host localhost
+wrong credentials: proxy true
+deny with a proxy: proxy
+not an http:// proxy: proxy
