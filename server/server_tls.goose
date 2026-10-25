@@ -4,7 +4,7 @@
 // builds with OpenSSL; server_epoll.goose is the same server without TLS,
 // which doesn't map it.
 import http from "../";
-import compress from "github.com/kaitk/goose-compress@v0.1.4";
+import compress from "github.com/tzekid/goose-compress@0d31e4f6360f9ac6e2a3464bb2457f527d6e27cc";
 import tls from "github.com/kaitk/goose-tls@v0.0.6";
 import hash from "github.com/kaitk/goose-hash@v0.0.4";
 import app;
