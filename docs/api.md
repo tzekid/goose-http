@@ -606,6 +606,15 @@ http::hangup(s);
   `ENOENT` for a name with no address, or `EAGAIN` for a lookup that failed for now.
   Its addresses are tried in the resolver's order, up to 8, all within `ms`, and the
   error is the last one's.
+- `http::connect(host, port, ms, deny)` doesn't connect to an address in a class that
+  `deny`'s bits name, for a program that connects where a URL from outside says:
+  `DENY_LOOPBACK`, `DENY_PRIVATE`, `DENY_LINK_LOCAL`, `DENY_SPECIAL`, or
+  `DENY_NON_PUBLIC` for all four, and a Unix socket counts as loopback. A name's
+  addresses in those classes are skipped, and when no address is left, or a literal
+  one is in them, it fails with `connect`'s `EACCES` before any connect.
+  `http::address_class(ip)` says which class an `Address`'s `ip` is in, 0 for a public
+  one, and judges an IPv6 address that holds an IPv4 one (IPv4-mapped, NAT64, 6to4) by
+  the IPv4 address. The classes are listed beside `address_class` in `socket.goose`.
 - `http::send_all(s, data, ms)` sends all of `data` within `ms` in all, and returns an
   `http::Error` whose code is 0, `ETIMEDOUT`, or the send's, such as `EPIPE` once the
   server has closed.
@@ -716,6 +725,12 @@ default (none), limits a request as a whole, from its connect to its response's 
 byte, so a server that sends a byte now and then can't hold it past the limit as it can
 past `ms`; a request that runs out fails with `ETIMEDOUT`, its `call` the step it was
 in, and its connection is closed. Neither limit bounds a host name's lookup.
+`Session.deny`, 0 by default, holds the classes of address the session doesn't connect
+to, as `http::connect`'s `deny` ([on a thread without a loop](#on-a-thread-without-a-loop)):
+`http::DENY_NON_PUBLIC` keeps a session that requests URLs from outside to public
+addresses, at each redirect too, and fails a request otherwise with `connect`'s
+`EACCES`. With `via`, `via`'s address is the one checked. A connection the session holds
+isn't reused once `deny` has changed.
 
 - A session keeps its connection, and reuses it for the next request to the same scheme,
   host, and port, unless the server answered with `Connection: close` or has closed it

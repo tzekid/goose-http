@@ -40,6 +40,11 @@ struct Session {
     // The most redirects a request follows (0: none, a redirect is the
     // response), as follow describes.
     redirects: i64 = 0,
+    // The classes of address the session doesn't connect to, as connect's
+    // DENY_ bits (0: none), for a program that requests URLs from outside:
+    // DENY_NON_PUBLIC keeps them to public addresses. Every redirect's
+    // address is checked too. With via, via's address is the one checked.
+    deny: i64 = 0,
     // The most body a response may have, in bytes as sent.
     max_body: i64 = 16 << 20,
     // An address to connect to in place of the URL's host and port, such as
@@ -48,8 +53,9 @@ struct Session {
     ctx: tls::Context,
     s: Socket = Socket { fd: -1 },
     c: tls::Conn,
-    // The connection's scheme, host, and port, as https://host:port.
-    peer: u8[..320],
+    // The connection's scheme, host, and port, as https://host:port, and the
+    // deny it was checked against, as https://host:port deny.
+    peer: u8[..340],
 }
 
 // A session whose TLS trusts OpenSSL's store of certificate authorities. An
@@ -434,9 +440,9 @@ fn expired(until: i64) -> bool { until >= 0 && net_clock_ms() >= until }
 // here and below, is the clock's time by which the request must end (-1:
 // none), as deadline gives it.
 fn open(s: Session&, u: Url, until: i64 = -1) -> Error {
-    var peer: u8[..320] = [];
+    var peer: u8[..340] = [];
     guard u.authority.len < 300 else { return client_error("url"); }
-    format(peer, if u.secure { "https://" } else { "http://" }, u.host, ":", u.port);
+    format(peer, if u.secure { "https://" } else { "http://" }, u.host, ":", u.port, " ", s.deny);
     if s.s.fd >= 0 && s.peer == peer {
         // A connection the server has closed, or that holds bytes nothing
         // asked for, such as TLS's close_notify, isn't reused.
@@ -445,7 +451,7 @@ fn open(s: Session&, u: Url, until: i64 = -1) -> Error {
     }
     hangup(s);
     let to = if s.via.len > 0 { s.via[..] } else { u.host };
-    let sock, e = connect(to, u.port, wait_ms(s, until));
+    let sock, e = connect(to, u.port, wait_ms(s, until), s.deny);
     guard e.code == 0 else { return e; }
     s.s = sock;
     if u.secure {

@@ -129,6 +129,65 @@ fn wait_socket(out: Reply, s: Socket, events: u32, ms: i64) -> Error {
 // The most of a name's addresses connect tries.
 let RESOLVED_MAX = 8;
 
+// The classes of address that connect's deny can refuse, as its bits, for a
+// program that connects where a URL from outside says (address_class):
+// loopback, which reaches this host; private, local networks; link-local,
+// a cloud's metadata service among them; and special, the rest that isn't
+// public unicast. DENY_NON_PUBLIC is all four.
+let DENY_LOOPBACK = 1;
+let DENY_PRIVATE = 2;
+let DENY_LINK_LOCAL = 4;
+let DENY_SPECIAL = 8;
+let DENY_NON_PUBLIC = 15;
+
+// Which DENY_ class ip, as Address holds it, is in, or 0 for a public
+// address: loopback 127.0.0.0/8, ::1, and the unspecified 0.0.0.0/8 and ::,
+// which connect to this host too; private 10.0.0.0/8, 172.16.0.0/12,
+// 192.168.0.0/16, the shared 100.64.0.0/10, and fc00::/7; link-local
+// 169.254.0.0/16 and fe80::/10; special multicast, reserved, documentation,
+// and benchmarking ranges, fec0::/10, and Teredo's 2001::/32. An IPv6 address
+// that holds an IPv4 one, IPv4-mapped, NAT64's 64:ff9b::/96, or 6to4's
+// 2002::/16, is the IPv4 address's class.
+fn address_class(ip: const u8[16]&) -> i64 {
+    var zeros = 0;
+    while zeros < 16 && ip[zeros] == 0 { zeros++; }
+    if zeros == 10 && ip[10] == 0xff && ip[11] == 0xff { return ipv4_class(ip[12], ip[13], ip[14]); }
+    if ip[0] == 0 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b && zeros_in(ip[4..12]) {
+        return ipv4_class(ip[12], ip[13], ip[14]);
+    }
+    if ip[0] == 0x20 && ip[1] == 0x02 { return ipv4_class(ip[2], ip[3], ip[4]); }
+    if zeros >= 15 { return DENY_LOOPBACK; }
+    if zeros >= 12 { return DENY_SPECIAL; }
+    if (ip[0] & 0xfe) == 0xfc { return DENY_PRIVATE; }
+    if ip[0] == 0xfe && (ip[1] & 0xc0) == 0x80 { return DENY_LINK_LOCAL; }
+    if ip[0] == 0xfe && (ip[1] & 0xc0) == 0xc0 || ip[0] == 0xff { return DENY_SPECIAL; }
+    if ip[0] == 0x20 && ip[1] == 0x01 && (ip[2] == 0x0d && ip[3] == 0xb8 || ip[2] == 0 && ip[3] == 0) {
+        return DENY_SPECIAL;
+    }
+    if ip[0] == 0x01 && zeros_in(ip[1..8]) { return DENY_SPECIAL; }
+    return 0;
+}
+
+fn zeros_in(bytes: const u8[:]) -> bool {
+    for b in bytes { guard b == 0 else { return false; } }
+    return true;
+}
+
+// address_class for the IPv4 address a.b.c.d, whose last byte none of the
+// classes needs.
+fn ipv4_class(a: u8, b: u8, c: u8) -> i64 {
+    if a == 127 || a == 0 { return DENY_LOOPBACK; }
+    if a == 10 || a == 172 && (b & 0xf0) == 16 || a == 192 && b == 168 || a == 100 && (b & 0xc0) == 64 {
+        return DENY_PRIVATE;
+    }
+    if a == 169 && b == 254 { return DENY_LINK_LOCAL; }
+    if a >= 224 || a == 192 && b == 0 && (c == 0 || c == 2) || a == 198 && (b & 0xfe) == 18
+        || a == 198 && b == 51 && c == 100 || a == 203 && b == 0 && c == 113 {
+        return DENY_SPECIAL;
+    }
+    return 0;
+}
+
 // Connects to host and port, waiting up to ms milliseconds (-1: no limit),
 // for a thread that runs no loop. The socket doesn't block: recv and
 // send_all wait for it. An error as connect_start's, or ETIMEDOUT.
@@ -138,10 +197,17 @@ let RESOLVED_MAX = 8;
 // address, or EAGAIN for a lookup that failed for now. Its addresses are
 // tried in the resolver's order, up to RESOLVED_MAX, all within ms; the
 // error is the last one's.
-fn connect(host: const u8[:], port: i64, ms: i64) -> Socket, Error {
+//
+// deny holds DENY_ bits: an address in one of their classes isn't
+// connected to, and when every address is, connect fails with EACCES. A
+// Unix socket counts as loopback.
+fn connect(host: const u8[:], port: i64, ms: i64, deny: i64 = 0) -> Socket, Error {
     let until = deadline(ms);
     let a, numeric = literal(host);
-    guard !numeric && !starts_with(host, "unix:") else {
+    let unix = starts_with(host, "unix:");
+    guard !numeric && !unix else {
+        let class = if unix { DENY_LOOPBACK } else { address_class(a.ip) };
+        guard (deny & class) == 0 else { return Socket { .. }, Error { call: "connect", code: EACCES }; }
         var s, e = connect_start(host, port);
         guard e.code == 0 else { return s, e; }
         return finish_connect(s, until);
@@ -150,8 +216,11 @@ fn connect(host: const u8[:], port: i64, ms: i64) -> Socket, Error {
     var addrs: u8[16 * RESOLVED_MAX] = [0; 16 * RESOLVED_MAX];
     let n = net_resolve(host, addrs);
     guard n > 0 else { return Socket { .. }, Error { call: "resolve", code: -n }; }
-    var e = no_error();
+    var e = Error { call: "connect", code: EACCES };
     for i in n {
+        var ip: u8[16] = [0; 16];
+        copy_into(ip, addrs[i * 16..i * 16 + 16]);
+        if (deny & address_class(ip)) != 0 { continue; }
         let fd = net_connect(addrs[i * 16..i * 16 + 16], port as i32, 0);
         if fd < 0 {
             e = Error { call: "connect", code: -fd };
