@@ -62,13 +62,30 @@ struct Session {
     // proxy's. deny can't be checked through a proxy, so a session with both
     // fails its requests with call "proxy".
     proxy: u8[..256],
+    // How many connections to other origins the session keeps open beside
+    // its own, up to IDLE_MAX, so that a program calling several origins in
+    // turn reconnects to none (0: none, as one origin needs), and how long
+    // one is kept unused.
+    max_idle: i64 = 0,
+    idle_ms: i64 = 30000,
     ctx: tls::Context,
     s: Socket = Socket { fd: -1 },
     c: tls::Conn,
     // The connection's scheme, host, and port, as https://host:port, and the
     // deny and proxy it was opened with, after them.
     peer: u8[..600],
+    // Whether the connection is in an exchange that begin started and end
+    // hasn't ended, so that it isn't kept for another request.
+    busy: bool = false,
+    // The connections kept for other origins, the oldest first.
+    idle: IdleConnection[..IDLE_MAX],
 }
+
+let IDLE_MAX = 8;
+
+// A connection a session keeps for its origin's next request, as Session
+// holds its own, and since when.
+struct IdleConnection { s: Socket = Socket { fd: -1 }, c: tls::Conn, peer: u8[..600], since: i64 = 0 }
 
 // A session whose TLS trusts OpenSSL's store of certificate authorities. An
 // https request fails with call "tls" when OpenSSL couldn't make its context.
@@ -87,6 +104,7 @@ fn session_trusting(ca: const u8[:], ms: i64 = 30000) -> Session, bool {
 // Closes the session's connection and frees its TLS context.
 fn free(s: Session&) {
     hangup(s);
+    while s.idle.len > 0 { close_idle(s, s.idle.len - 1); }
     if tls::ok(s.ctx) { tls::free(s.ctx); }
     s.ctx = tls::Context { .. };
 }
@@ -574,6 +592,7 @@ fn begin_by(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     guard e.code == 0 else { return x, e; }
     e = put(s, wire, until);
     guard e.code == 0 else { return x, failed(s, x, e); }
+    s.busy = true;
     x.upload = req.length;
     x.sending = req.length >= -1;
     if req.expect {
@@ -807,6 +826,7 @@ fn end(s: Session&, x: ClientExchange&) {
     let connection, has = field_in(x.fields, "Connection");
     let keep = x.done && !x.failed && !x.to_close && !x.last && x.held.len == 0 && !(has && has_close(connection));
     if !keep { hangup(s); }
+    s.busy = false;
     x.failed = !keep || x.failed;
 }
 
@@ -855,8 +875,10 @@ fn open(s: Session&, u: Url, until: i64 = -1, tunnel: bool = false) -> Error {
         // asked for, such as TLS's close_notify, isn't reused.
         var probe: u8[1] = [0];
         if recv(s.s, probe, 0) == -ETIMEDOUT { return no_error(); }
+        hangup(s);
     }
-    hangup(s);
+    park(s);
+    if take_idle(s, peer) { return no_error(); }
     var p = Proxy { .. };
     if proxied {
         guard s.deny == 0 else { return client_error("proxy"); }
@@ -994,6 +1016,58 @@ fn hangup(s: Session&) {
     }
     hangup(s.s);
     s.peer.clear();
+    s.busy = false;
+}
+
+// Keeps the session's connection among its idle ones, for its origin's next
+// request, where max_idle allows and no exchange is using it, the oldest
+// making room; closes it otherwise.
+fn park(s: Session&) {
+    let most = min(s.max_idle, IDLE_MAX);
+    guard s.s.fd >= 0 && !s.busy && most > 0 && s.peer.len > 0 else {
+        hangup(s);
+        return;
+    }
+    while s.idle.len >= most { close_idle(s, 0); }
+    s.idle.push(IdleConnection { s: s.s, c: s.c, peer: s.peer, since: net_clock_ms() });
+    s.s = Socket { .. };
+    s.c = tls::Conn { .. };
+    s.peer.clear();
+}
+
+// Makes the idle connection to peer the session's own, if one is fit: kept
+// no longer than idle_ms, and not closed by its server since, nor holding
+// bytes nothing asked for. Closes those that aren't fit, and those past
+// idle_ms.
+fn take_idle(s: Session&, peer: const u8[:]) -> bool {
+    var i = 0;
+    while i < s.idle.len {
+        let stale = net_clock_ms() - s.idle[i].since > s.idle_ms;
+        guard stale || s.idle[i].peer == peer else {
+            i++;
+            continue;
+        }
+        var probe: u8[1] = [0];
+        if !stale && recv(s.idle[i].s, probe, 0) == -ETIMEDOUT {
+            s.s = s.idle[i].s;
+            s.c = s.idle[i].c;
+            s.peer.clear();
+            s.peer.append(peer);
+            for j in s.idle.len - i - 1 { s.idle[i + j] = s.idle[i + j + 1]; }
+            s.idle.resize(s.idle.len - 1);
+            return true;
+        }
+        close_idle(s, i);
+    }
+    return false;
+}
+
+// Closes the session's idle connection i.
+fn close_idle(s: Session&, i: i64) {
+    if tls::ok(s.idle[i].c) { tls::free(s.idle[i].c); }
+    hangup(s.idle[i].s);
+    for j in s.idle.len - i - 1 { s.idle[i + j] = s.idle[i + j + 1]; }
+    s.idle.resize(s.idle.len - 1);
 }
 
 // What read_response finds in the bytes so far, beside INCOMPLETE.

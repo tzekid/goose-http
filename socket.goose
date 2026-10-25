@@ -284,7 +284,7 @@ fn race(addrs: const u8[:], port: i64, until: i64) -> Socket, Error {
                 started = -1;
                 continue;
             }
-            fds[live] = fd as i64;
+            fds[live] = fd;
             live++;
             started = net_clock_ms();
         }

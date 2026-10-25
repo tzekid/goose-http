@@ -1,0 +1,14 @@
+none kept, A B A B:
+  A1 B1 A2 B2
+two kept, A B A B:
+  A3 B3 A3 B3
+past idle_ms, A B, a pause, A:
+  A3 B3
+  A4
+one kept, A B C A B:
+  A5 B4 C1 A6 B5
+an exchange not ended, A, then B A:
+  B6 A8
+deny changed, A B, then A:
+  A9 B7
+  A10

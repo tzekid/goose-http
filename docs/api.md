@@ -759,6 +759,12 @@ another origin's requests. With `via`, `via`'s address is the proxy's. Shown in
 - A session keeps its connection, and reuses it for the next request to the same scheme,
   host, and port, unless the server answered with `Connection: close` or has closed it
   since. It doesn't send a request again on a connection that fails.
+- `Session.max_idle`, 0 by default and at most 8, is how many connections to other
+  origins the session keeps open beside its own, so that a lane calling several in turn
+  reconnects to none; the oldest makes room. One kept past `Session.idle_ms`, 30,000 by
+  default, is closed rather than reused, and so is one whose server has closed it. Only
+  a connection whose exchange has ended is kept, and only for the same origin, `deny`,
+  and proxy; `http::free` closes them all. Shown in `test/client/client_idle.goose`.
 - It writes `Host`, `User-Agent: goose-http`, `Accept: */*`, `Content-Type`, and
   `Content-Length` itself, and decodes a chunked body. It skips a 1xx before the final
   response. It doesn't keep cookies or decode a compressed body.
