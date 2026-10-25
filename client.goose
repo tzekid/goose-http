@@ -37,6 +37,9 @@ struct Session {
     // its response's last byte, however steadily bytes arrive (-1: none). A
     // host name's lookup isn't bounded by it either.
     total_ms: i64 = -1,
+    // The most redirects a request follows (0: none, a redirect is the
+    // response), as follow describes.
+    redirects: i64 = 0,
     // The most body a response may have, in bytes as sent.
     max_body: i64 = 16 << 20,
     // An address to connect to in place of the URL's host and port, such as
@@ -143,7 +146,143 @@ fn request<F>(s: Session&, method: const u8[:], url: const u8[:]) -> ClientRespo
     var payload: u8[>..] = [];
     var req = ClientRequest { lines: lines, payload: payload };
     F(&req);
-    return exchange(s, method, url, req);
+    return follow(s, method, url, req);
+}
+
+// Sends the request with exchange, and follows the redirects in its
+// responses, up to Session.redirects of them: a 301, 302, 303, 307, or 308
+// with a Location. A 303, and a 301 or 302 to a POST, go on as a GET without
+// the body; the others repeat the method and the body. A redirect to another
+// scheme, host, or port drops the fields Authorization, Cookie, and
+// Proxy-Authorization from the request, and the rest of it goes on. A
+// redirect past the limit, from https to http, or to a Location that isn't
+// an http:// or https:// URL fails with call "redirect". Session.total_ms
+// counts every request of the chain.
+fn follow(s: Session&, method: const u8[:], url: const u8[:], req: const ClientRequest&) -> ClientResponse, Error {
+    let until = deadline(s.total_ms);
+    var r, e = exchange_by(s, method, url, req, until);
+    var m = method;
+    var at: u8[>..] = [];
+    at.append(url);
+    var credentials = true;
+    var body = true;
+    for hop in s.redirects + 1 {
+        guard e.code == 0 && is_redirect(r.status) else { return r, e; }
+        let location, has = header(r, "Location");
+        guard has && s.redirects > 0 else { return r, e; }
+        guard hop < s.redirects else { break; }
+        var next: u8[>..] = [];
+        let from, _ = parse_url(at);
+        guard resolve_url(from, location, next) else { break; }
+        let to, ok = parse_url(next);
+        guard ok && (to.secure || !from.secure) else { break; }
+        credentials = credentials && same_origin(from, to);
+        if r.status == 303 && m != "HEAD" || (r.status == 301 || r.status == 302) && m == "POST" {
+            m = "GET";
+            body = false;
+        }
+        at = copy(next);
+        r, e = exchange_hop(s, m, at, req, until, credentials, body);
+    }
+    return ClientResponse { .. }, client_error("redirect");
+}
+
+fn is_redirect(status: i64) -> bool { status == 301 || status == 302 || status == 303 || status == 307 || status == 308 }
+
+// Whether a and b have the same scheme, host, and port: the same origin.
+fn same_origin(a: Url, b: Url) -> bool { a.secure == b.secure && a.port == b.port && same_name(a.host, b.host) }
+
+// exchange_by for a request a redirect repeats: req's fields, without those
+// that carry credentials unless credentials, and its body, unless body is
+// false.
+fn exchange_hop(s: Session&, method: const u8[:], url: const u8[:], req: const ClientRequest&, until: i64,
+                credentials: bool, body: bool) -> ClientResponse, Error {
+    var lines: u8[>..] = [];
+    var pos = 0;
+    while pos < req.lines.len {
+        let name, value, next = field_at(req.lines, pos);
+        if credentials || !same_name(name, "Authorization") && !same_name(name, "Cookie")
+            && !same_name(name, "Proxy-Authorization") {
+            lines.append(req.lines[pos..next]);
+        }
+        pos = next;
+    }
+    var payload: u8[>..] = [];
+    if body { payload.append(req.payload); }
+    let hop = ClientRequest { lines: lines, payload: payload, media: if body { req.media } else { "" } };
+    return exchange_by(s, method, url, hop, until);
+}
+
+// Writes to out the URL that location, a redirect's Location, names from
+// base (RFC 3986 §5.2), and returns whether it names one: a URL with its
+// scheme, one without it ("//host/path"), an absolute path, a query, or a
+// path relative to base's. parse_url then checks what out holds.
+fn resolve_url(base: Url, location: const u8[:], out: u8[>..]&) -> bool {
+    guard location.len > 0 else { return false; }
+    let colon = find(location, ":");
+    let delim = find_any(location, REFERENCE_DELIM);
+    if colon > 0 && (delim < 0 || colon < delim) {
+        out.append(location);
+        return true;
+    }
+    let scheme = if base.secure { "https:" } else { "http:" };
+    if starts_with(location, "//") {
+        format(out, scheme, location);
+        return true;
+    }
+    format(out, scheme, "//", base.authority);
+    let query = find(base.target, "?");
+    let path = if query >= 0 { base.target[..query] } else { base.target };
+    let ref_end = find_any(location, QUERY_OR_FRAGMENT);
+    let ref_path = if ref_end >= 0 { location[..ref_end] } else { location };
+    let rest = if ref_end >= 0 { location[ref_end..] } else { "" };
+    if ref_path.len == 0 {
+        out.append(path);
+        if rest[0] == '?' { out.append(rest); } else if query >= 0 { out.append(base.target[query..]); }
+        return true;
+    }
+    if ref_path[0] == '/' {
+        append_without_dots(out, ref_path);
+    } else {
+        var merged: u8[>..] = [];
+        let slash = rfind(path, "/");
+        if slash >= 0 { merged.append(path[..slash + 1]); } else { merged.push('/'); }
+        merged.append(ref_path);
+        append_without_dots(out, merged);
+    }
+    out.append(rest);
+    return true;
+}
+
+let REFERENCE_DELIM = byte_set("/?#");
+let QUERY_OR_FRAGMENT = byte_set("?#");
+
+// Appends path, which starts with '/', to out without its "." and ".."
+// segments (RFC 3986 §5.2.4).
+fn append_without_dots(out: u8[>..]&, path: const u8[:]) {
+    let root = out.len;
+    var at = 0;
+    while at < path.len {
+        var end = at + 1;
+        while end < path.len && path[end] != '/' { end++; }
+        let segment = path[at + 1..end];
+        let last = end == path.len;
+        if segment == "." || segment == ".." {
+            if segment == ".." {
+                var cut = out.len;
+                while cut > root {
+                    cut--;
+                    if out[cut] == '/' { break; }
+                }
+                out.resize(cut);
+            }
+            if last { out.push('/'); }
+        } else {
+            out.push('/');
+            out.append(segment);
+        }
+        at = end;
+    }
 }
 
 fn get<F>(s: Session&, url: const u8[:]) -> ClientResponse, Error { return request(s, "GET", url) { req => F(req); }; }
@@ -231,6 +370,11 @@ fn client_error(call: const u8[:]) -> Error { Error { call: call, code: EINVAL }
 // Sends the request, and reads its response, on the session's connection to
 // url's peer: the open one, or a new one.
 fn exchange(s: Session&, method: const u8[:], url: const u8[:], req: const ClientRequest&) -> ClientResponse, Error {
+    return exchange_by(s, method, url, req, deadline(s.total_ms));
+}
+
+// exchange, ending by until, the clock's time (-1: no limit but each wait's).
+fn exchange_by(s: Session&, method: const u8[:], url: const u8[:], req: const ClientRequest&, until: i64) -> ClientResponse, Error {
     var r = ClientResponse { .. };
     let u, ok = parse_url(url);
     guard ok else { return r, client_error("url"); }
@@ -238,7 +382,6 @@ fn exchange(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     var wire: u8[>..] = [];
     write_request(wire, method, u, req);
 
-    let until = deadline(s.total_ms);
     var e = open(s, u, until);
     guard e.code == 0 else { return r, e; }
     e = put(s, wire, until);

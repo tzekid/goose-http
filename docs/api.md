@@ -722,7 +722,13 @@ in, and its connection is closed. Neither limit bounds a host name's lookup.
   since. It doesn't send a request again on a connection that fails.
 - It writes `Host`, `User-Agent: goose-http`, `Accept: */*`, `Content-Type`, and
   `Content-Length` itself, and decodes a chunked body. It skips a 1xx before the final
-  response. It doesn't follow redirects, keep cookies, or decode a compressed body.
+  response. It doesn't keep cookies or decode a compressed body.
+- It follows up to `Session.redirects` redirects, 0 by default, so that a redirect is
+  the response: a 301, 302, 303, 307, or 308 with a `Location`, which may be relative.
+  A 303, and a 301 or 302 to a POST, go on as a GET without the body; the others repeat
+  the method and the body. At a redirect to another scheme, host, or port, the request
+  goes on without `Authorization`, `Cookie`, and `Proxy-Authorization`, and its other
+  fields as they were. `Session.total_ms` counts every request of the chain.
 - Under TLS, a connection that ends without close_notify fails with `recv`, so a body
   that ends with the connection can't be cut short unnoticed.
 
@@ -736,13 +742,16 @@ A request that fails returns status 0 and an `http::Error`, whose `call` names t
 | `resolve`, `connect`, `send`, `recv` | The socket's, with its code, as [on a thread without a loop](#on-a-thread-without-a-loop) |
 | `tls` | The handshake failed, such as for a certificate the session doesn't trust, or a TLS record did; `tls::error_text()` says why |
 | `response` | The response is malformed, or its body is past `max_body` |
+| `redirect` | A redirect past `Session.redirects`, from `https://` to `http://`, or to a `Location` that isn't an `http://` or `https://` URL |
 
 The calls are compositions of parts a program can call on its own:
 `http::parse_url(url) -> Url, bool`, `http::write_request(out, method, u, req)`, which
 appends the request's bytes, `http::read_response(raw, closed, head, max_body, r)`, which
 reads a response from the bytes so far (`READ_COMPLETE`, `READ_AT_CLOSE`, `INCOMPLETE`,
-or `READ_MALFORMED`), and `http::exchange(s, method, url, req)`, which carries one
-request on the session's connection.
+or `READ_MALFORMED`), `http::exchange(s, method, url, req)`, which carries one
+request on the session's connection, `http::resolve_url(base, location, out)`, which
+writes the URL a `Location` names from a `Url`, and `http::follow(s, method, url, req)`,
+which carries a request and its redirects.
 
 ## The store
 
