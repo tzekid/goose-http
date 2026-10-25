@@ -1,0 +1,10 @@
+a whole body: 0, gzip, 488 bytes sent, the same JSON true
+a streamed body: 0, gzip, the same lines true, at most 1000 bytes a read
+/deflate: 869 bytes, true
+/identity: 869 bytes, true
+/crc: failed: response
+/short: failed: response
+/br: failed: response
+/chain: failed: response
+10 MB of zeros, sent in under 20 KB true, against a 1 MB limit: response
+  read in pieces: response, having made no more than the limit true
