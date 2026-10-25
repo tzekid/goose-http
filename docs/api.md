@@ -739,6 +739,23 @@ addresses, at each redirect too, and fails a request otherwise with `connect`'s
 `EACCES`. With `via`, `via`'s address is the one checked. A connection the session holds
 isn't reused once `deny` has changed.
 
+`Session.proxy`, empty by default, is an HTTP proxy every request goes through:
+`http://host:port`, or `http://user:password@host:port`, percent-encoded, for a proxy
+that asks for Basic credentials, which go in `Proxy-Authorization` and never to the
+origin. An `http://` request goes to the proxy with the whole URL in its request line;
+an `https://` request, and a WebSocket of either scheme, go through a tunnel the proxy
+opens with `CONNECT`, over which TLS checks the URL's host as it would directly. A
+connection to the proxy is reused only for the same origin, so no tunnel carries
+another origin's requests. With `via`, `via`'s address is the proxy's. Shown in
+`test/client/client_proxy.goose`. The session reads no environment variables, such as
+`HTTPS_PROXY`, and offers no SOCKS, PAC, or TLS to the proxy itself.
+
+- A proxy that refuses the tunnel fails the request with call `proxy`: `EACCES` for 407,
+  `ECONNREFUSED` for another status. A `Session.proxy` that isn't `http://` with a host
+  fails it with `EINVAL`.
+- `deny` can't judge an origin's address through a proxy, which resolves it, so a
+  session with both fails its requests with call `proxy` rather than claim to.
+
 - A session keeps its connection, and reuses it for the next request to the same scheme,
   host, and port, unless the server answered with `Connection: close` or has closed it
   since. It doesn't send a request again on a connection that fails.
@@ -765,6 +782,7 @@ A request that fails returns status 0 and an `http::Error`, whose `call` names t
 | `tls` | The handshake failed, such as for a certificate the session doesn't trust, or a TLS record did; `tls::error_text()` says why |
 | `response` | The response is malformed, or its body is past `max_body` |
 | `redirect` | A redirect past `Session.redirects`, from `https://` to `http://`, or to a `Location` that isn't an `http://` or `https://` URL |
+| `proxy` | `Session.proxy` isn't an `http://` URL with a host, `deny` is set beside it, or the proxy refused a tunnel: `EACCES` for 407, `ECONNREFUSED` for another status |
 
 A body too large to hold, or one to use as it comes, is read in pieces, through a buffer
 of the program's: `http::begin` sends the request, `http::response` reads the response's

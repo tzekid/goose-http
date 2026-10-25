@@ -22,6 +22,7 @@
 namespace http;
 
 import std;
+import base64;
 import tls from "github.com/kaitk/goose-tls@v0.0.6";
 import sys;
 import message;
@@ -53,12 +54,20 @@ struct Session {
     // An address to connect to in place of the URL's host and port, such as
     // "unix:/run/app.sock"; TLS still checks the URL's host.
     via: u8[..256],
+    // An HTTP proxy every request goes through, http://host:port, with
+    // user:password@ before the host for one that asks for them (Basic);
+    // empty for none. An http:// request goes to it whole, and an https://
+    // one, or a WebSocket, through a tunnel it opens with CONNECT, over
+    // which TLS checks the URL's host. With via, via's address is the
+    // proxy's. deny can't be checked through a proxy, so a session with both
+    // fails its requests with call "proxy".
+    proxy: u8[..256],
     ctx: tls::Context,
     s: Socket = Socket { fd: -1 },
     c: tls::Conn,
     // The connection's scheme, host, and port, as https://host:port, and the
-    // deny it was checked against, as https://host:port deny.
-    peer: u8[..340],
+    // deny and proxy it was opened with, after them.
+    peer: u8[..600],
 }
 
 // A session whose TLS trusts OpenSSL's store of certificate authorities. An
@@ -358,43 +367,93 @@ fn parse_url(url: const u8[:]) -> Url, bool {
     var end = find_any(rest, AUTHORITY_END);
     if end < 0 { end = rest.len; }
     u.authority = rest[..end];
-    u.host = u.authority;
     u.target = if end == rest.len { "/" } else { rest[end..] };
+    let host, port, ok = parse_authority(u.authority, u.port);
+    guard ok && find_any(u.target, NOT_IN_TARGET) < 0 else { return u, false; }
+    u.host = host;
+    u.port = port;
+    return u, true;
+}
+
+// The host and port of authority, host[:port], as a URL holds them, port
+// unless it names one, and whether it's one: host bracketed for IPv6, with
+// none of NOT_IN_HOST, and a port from 1 to 65535.
+fn parse_authority(authority: const u8[:], port: i64) -> const u8[:], i64, bool {
+    var host = authority;
     var port_at = -1;
-    if u.authority.len > 0 && u.authority[0] == '[' {
-        let close = find(u.authority, "]");
-        guard close > 1 else { return u, false; }
-        u.host = u.authority[1..close];
-        if close + 1 < u.authority.len {
-            guard u.authority[close + 1] == ':' else { return u, false; }
+    if authority.len > 0 && authority[0] == '[' {
+        let close = find(authority, "]");
+        guard close > 1 else { return "", 0, false; }
+        host = authority[1..close];
+        if close + 1 < authority.len {
+            guard authority[close + 1] == ':' else { return "", 0, false; }
             port_at = close + 2;
         }
     } else {
-        let colon = find(u.authority, ":");
+        let colon = find(authority, ":");
         if colon >= 0 {
-            u.host = u.authority[..colon];
+            host = authority[..colon];
             port_at = colon + 1;
         }
     }
+    var p = port;
     if port_at >= 0 {
-        let digits = u.authority[port_at..];
-        let port, ok = parse_int(digits);
-        guard ok && is_digit(digits[0]) && port > 0 && port < 65536 else { return u, false; }
-        u.port = port;
+        let digits = authority[port_at..];
+        let n, ok = parse_int(digits);
+        guard ok && digits.len > 0 && is_digit(digits[0]) && n > 0 && n < 65536 else { return "", 0, false; }
+        p = n;
     }
-    guard u.host.len > 0 && find_any(u.host, NOT_IN_HOST) < 0 else { return u, false; }
-    guard find_any(u.target, NOT_IN_TARGET) < 0 else { return u, false; }
-    return u, true;
+    guard host.len > 0 && find_any(host, NOT_IN_HOST) < 0 else { return "", 0, false; }
+    return host, p, true;
+}
+
+// The parts of Session.proxy, as parse_proxy reads it: its host and port,
+// and user:password, still percent-encoded, if it names them.
+struct Proxy { host: const u8[:], port: i64 = 80, userinfo: const u8[:] }
+
+// The parts of text, http://[user:password@]host[:port][/], and whether it's
+// one; port 80 unless it names one.
+fn parse_proxy(text: const u8[:]) -> Proxy, bool {
+    var p = Proxy { .. };
+    guard starts_with(text, "http://") else { return p, false; }
+    var rest = text[7..];
+    if rest.len > 0 && rest[rest.len - 1] == '/' { rest = rest[..rest.len - 1]; }
+    let at = rfind(rest, "@");
+    if at >= 0 {
+        p.userinfo = rest[..at];
+        rest = rest[at + 1..];
+    }
+    guard find_any(rest, AUTHORITY_END) < 0 else { return p, false; }
+    let host, port, ok = parse_authority(rest, 80);
+    p.host = host;
+    p.port = port;
+    return p, ok;
+}
+
+// Appends Proxy-Authorization's field line for p's credentials, if it has
+// any: Basic, with them percent-decoded.
+fn proxy_authorization(out: u8[>..]&, p: Proxy) {
+    guard p.userinfo.len > 0 else { return; }
+    var plain: u8[>..] = [];
+    guard decode(p.userinfo, plain) else { return; }
+    var token: u8[>..] = [];
+    base64::encode(token, plain);
+    format(out, "Proxy-Authorization: Basic ", token, "\r\n");
 }
 
 // Appends the request to out: its request line, Host, User-Agent, Accept,
 // req's fields, its body's Content-Type and Content-Length, or
 // Transfer-Encoding: chunked for a body stream declared in chunks, and the
 // body, unless it waits for 100 Continue (expect_continue) or the program
-// writes it. A POST, PUT, or PATCH says Content-Length: 0 for no body.
-fn write_request(out: u8[>..]&, method: const u8[:], u: Url, req: const ClientRequest&) {
-    format(out, method, " ", u.target, " HTTP/1.1\r\nHost: ", u.authority,
-           "\r\nUser-Agent: goose-http\r\nAccept: */*\r\n", req.lines);
+// writes it. A POST, PUT, or PATCH says Content-Length: 0 for no body. Sent
+// to an HTTP proxy, p, one with a host, the request line has the whole URL,
+// and p's credentials go in Proxy-Authorization.
+fn write_request(out: u8[>..]&, method: const u8[:], u: Url, req: const ClientRequest&, p: Proxy = Proxy { .. }) {
+    format(out, method, " ");
+    if p.host.len > 0 { format(out, "http://", u.authority); }
+    format(out, u.target, " HTTP/1.1\r\nHost: ", u.authority, "\r\nUser-Agent: goose-http\r\nAccept: */*\r\n");
+    proxy_authorization(out, p);
+    out.append(req.lines);
     if req.media.len > 0 { format(out, "Content-Type: ", req.media, "\r\n"); }
     if req.length == -1 {
         out.append("Transfer-Encoding: chunked\r\n");
@@ -504,7 +563,13 @@ fn begin_by(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     guard ok else { return x, client_error("url"); }
     guard req.refused.len == 0 else { return x, client_error(if req.refused == "body" { "body" } else { "header" }); }
     var wire: u8[>..] = [];
-    write_request(wire, method, u, req);
+    if s.proxy.len > 0 && !u.secure {
+        let p, valid = parse_proxy(s.proxy);
+        guard valid else { return x, client_error("proxy"); }
+        write_request(wire, method, u, req, p);
+    } else {
+        write_request(wire, method, u, req);
+    }
     var e = open(s, u, until);
     guard e.code == 0 else { return x, e; }
     e = put(s, wire, until);
@@ -778,10 +843,13 @@ fn wait_ms(s: const Session&, until: i64) -> i64 {
 // server hasn't closed it, or a new one, with its TLS handshake done. until,
 // here and below, is the clock's time by which the request must end (-1:
 // none), as deadline gives it.
-fn open(s: Session&, u: Url, until: i64 = -1) -> Error {
-    var peer: u8[..340] = [];
+fn open(s: Session&, u: Url, until: i64 = -1, tunnel: bool = false) -> Error {
+    var peer: u8[..600] = [];
     guard u.authority.len < 300 else { return client_error("url"); }
-    format(peer, if u.secure { "https://" } else { "http://" }, u.host, ":", u.port, " ", s.deny);
+    let proxied = s.proxy.len > 0;
+    let through = proxied && (u.secure || tunnel);
+    format(peer, if u.secure { "https://" } else { "http://" }, u.host, ":", u.port, " ", s.deny, " ", s.proxy,
+           if through { " tunnel" } else { "" });
     if s.s.fd >= 0 && s.peer == peer {
         // A connection the server has closed, or that holds bytes nothing
         // asked for, such as TLS's close_notify, isn't reused.
@@ -789,10 +857,24 @@ fn open(s: Session&, u: Url, until: i64 = -1) -> Error {
         if recv(s.s, probe, 0) == -ETIMEDOUT { return no_error(); }
     }
     hangup(s);
-    let to = if s.via.len > 0 { s.via[..] } else { u.host };
-    let sock, e = connect(to, u.port, wait_ms(s, until), s.deny);
+    var p = Proxy { .. };
+    if proxied {
+        guard s.deny == 0 else { return client_error("proxy"); }
+        let parsed, valid = parse_proxy(s.proxy);
+        guard valid else { return client_error("proxy"); }
+        p = parsed;
+    }
+    let to = if s.via.len > 0 { s.via[..] } else if proxied { p.host } else { u.host };
+    let sock, e = connect(to, if proxied { p.port } else { u.port }, wait_ms(s, until), s.deny);
     guard e.code == 0 else { return e; }
     s.s = sock;
+    if through {
+        let t = open_tunnel(s, u, p, until);
+        guard t.code == 0 else {
+            hangup(s);
+            return t;
+        }
+    }
     if u.secure {
         guard tls::ok(s.ctx) else {
             hangup(s);
@@ -807,6 +889,46 @@ fn open(s: Session&, u: Url, until: i64 = -1) -> Error {
     }
     s.peer = peer;
     return no_error();
+}
+
+// Opens a tunnel to u's host and port through the proxy p that the session's
+// socket is connected to (RFC 9110 §9.3.6), within until: CONNECT, with p's
+// credentials, and a 2xx answer, after which the socket carries the origin's
+// bytes. A 407 fails with call "proxy" and EACCES, another refusal with
+// ECONNREFUSED, and an answer that isn't one with EINVAL.
+fn open_tunnel(s: Session&, u: Url, p: Proxy, until: i64) -> Error {
+    var target: u8[>..] = [];
+    if find(u.host, ":") >= 0 { format(target, "[", u.host, "]:", u.port); } else { format(target, u.host, ":", u.port); }
+    var wire: u8[>..] = [];
+    format(wire, "CONNECT ", target, " HTTP/1.1\r\nHost: ", target, "\r\nUser-Agent: goose-http\r\n");
+    proxy_authorization(wire, p);
+    wire.append("\r\n");
+    let e = put(s, wire, until);
+    guard e.code == 0 else { return e; }
+    var raw: u8[>..] = [];
+    var buf: u8[4096] = [0; 4096];
+    loop {
+        let h, verdict = response_head(raw, false);
+        if verdict == READ_COMPLETE && h.status < 200 {
+            drop_front(raw, h.end);
+            continue;
+        }
+        if verdict == READ_COMPLETE {
+            guard h.status < 300 else {
+                return Error { call: "proxy", code: if h.status == 407 { EACCES } else { ECONNREFUSED } };
+            }
+            // The client speaks first in TLS and WebSocket alike, so nothing
+            // may follow the answer yet.
+            guard raw.len == h.end else { return client_error("proxy"); }
+            return no_error();
+        }
+        guard verdict == INCOMPLETE else { return client_error("proxy"); }
+        guard !expired(until) else { return Error { call: "recv", code: ETIMEDOUT }; }
+        let n, got = take(s, buf, until);
+        guard got.code == 0 else { return got; }
+        guard n > 0 else { return client_error("proxy"); }
+        raw.append(buf[..n]);
+    }
 }
 
 fn handshake(s: Session&, until: i64 = -1) -> Error {
