@@ -21,5 +21,8 @@ url true
 header true
 header true
 body true
+header true
+header true
+body true
 == untrusted
 tls 0

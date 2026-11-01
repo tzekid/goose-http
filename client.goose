@@ -168,9 +168,11 @@ fn json(req: ClientRequest&, v) {
     req.media = "application/json";
 }
 
-// Makes bytes the body, with Content-Type: media.
+// Makes bytes the body, with Content-Type: media, unless media is empty. A
+// media type that can't be a field's value fails the request with call
+// "header".
 fn body(req: ClientRequest&, media: const u8[:], bytes: const u8[:]) {
-    guard first_body(req) else { return; }
+    guard first_body(req) && media_ok(req, media) else { return; }
     req.payload.append(bytes);
     req.media = media;
 }
@@ -180,7 +182,7 @@ fn body(req: ClientRequest&, media: const u8[:], bytes: const u8[:]) {
 // Content-Length, or for length -1, chunks. Only begin takes such a
 // request; request and its forms fail it with call "body".
 fn stream(req: ClientRequest&, media: const u8[:], length: i64) {
-    guard first_body(req) else { return; }
+    guard first_body(req) && media_ok(req, media) else { return; }
     guard length >= -1 else {
         if req.refused.len == 0 { req.refused = "body"; }
         return;
@@ -195,9 +197,23 @@ fn stream(req: ClientRequest&, media: const u8[:], length: i64) {
 fn expect_continue(req: ClientRequest&) { req.expect = true; }
 
 fn first_body(req: ClientRequest&) -> bool {
-    guard req.media.len > 0 else { return true; }
+    guard req.media.len > 0 || req.payload.len > 0 || req.length != -2 else { return true; }
     if req.refused.len == 0 { req.refused = "body"; }
     return false;
+}
+
+// Whether media can be a Content-Type's value, which the request fails with
+// call "header" where it can't, as for a CR or an LF in it.
+fn media_ok(req: ClientRequest&, media: const u8[:]) -> bool {
+    guard !is_field_value(media) else { return true; }
+    if req.refused.len == 0 { req.refused = "header"; }
+    return false;
+}
+
+// Whether s is a token (RFC 9110 §5.6.2), as a method is.
+fn is_token(s: const u8[:]) -> bool {
+    for c in s { guard is_tchar(c) else { return false; } }
+    return s.len > 0;
 }
 
 // The request method makes to url, which is http:// or https://, after F has
@@ -586,6 +602,7 @@ fn begin_by(s: Session&, method: const u8[:], url: const u8[:], req: const Clien
     var x = ClientExchange { until: until, head_only: method == "HEAD", .. };
     let u, ok = parse_url(url);
     guard ok else { return x, client_error("url"); }
+    guard is_token(method) else { return x, client_error("header"); }
     guard req.refused.len == 0 else { return x, client_error(if req.refused == "body" { "body" } else { "header" }); }
     var wire: u8[>..] = [];
     if s.proxy.len > 0 && !u.secure {

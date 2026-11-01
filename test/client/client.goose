@@ -2,8 +2,9 @@
 // serve, plain, and serve_epoll with TLS and a certificate goose-tls makes
 // here. A POST with a bearer token, a field, and a JSON body, over https and
 // http; a GET that reuses the connection, and one after the server closed
-// it; the requests the session refuses before sending; and a session that
-// doesn't trust the certificate.
+// it; the requests the session refuses before sending, a CR or LF in a field,
+// a media type, or the method among them; and a session that doesn't trust
+// the certificate.
 import std;
 import os;
 import http from "../../";
@@ -141,6 +142,15 @@ fn main() {
         http::body(req, "text/plain", "two");
     };
     print(e4.call, " ", e4.code == http::EINVAL);
+    let r6, e6 = http::post(session, "http://localhost/") { req => http::body(req, "text/plain\r\nX-In: 1", "x"); };
+    print(e6.call, " ", e6.code == http::EINVAL);
+    let r7, e7 = http::request(session, "GET /admin HTTP/1.1\r\nX-In: 1\r\nX:", "http://localhost/") { req => };
+    print(e7.call, " ", e7.code == http::EINVAL);
+    let r8, e8 = http::post(session, "http://localhost/") { req =>
+        http::body(req, "", "one");
+        http::body(req, "text/plain", "two");
+    };
+    print(e8.call, " ", e8.code == http::EINVAL);
 
     print("== untrusted");
     var stranger = http::session(5000);
