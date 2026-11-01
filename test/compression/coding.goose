@@ -2,7 +2,7 @@
 // compressible.
 import std;
 import http from "../../";
-import compress from "github.com/tzekid/goose-compress@0d31e4f6360f9ac6e2a3464bb2457f527d6e27cc";
+import compress from "github.com/tzekid/goose-compress@81aedc4ac044a458a9124337d0c6c731cadb27ef";
 import http.compression;
 import check from "../";
 

@@ -941,7 +941,7 @@ says, `gzip` or `deflate`, with goose-compress's decoder, which a program that i
 declares in its root file. Shown in `test/client/client_decoding.goose`.
 
 ```rust
-import compress from "github.com/tzekid/goose-compress@0d31e4f6360f9ac6e2a3464bb2457f527d6e27cc";
+import compress from "github.com/tzekid/goose-compress@81aedc4ac044a458a9124337d0c6c731cadb27ef";
 import http.client_decoding;
 
 let r, err = http::get(session, url) { req => http::accept_compressed(req); };
