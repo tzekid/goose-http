@@ -733,7 +733,10 @@ one instead.
   one call; it waits until a handler needs it, as the loop's resolver does.
 - A session keeps one connection and reuses it for the same scheme, host, and port. It
   checks with a recv that doesn't wait whether the server has closed the connection,
-  rather than send a request again after a failure, which could repeat a POST.
+  rather than send a request again after a failure, which could repeat a POST. Since
+  2026-10-25, `Session.max_idle` keeps up to 8 more, for other origins, inline in the
+  session rather than in a pool of the process's, which Goose's threads couldn't share;
+  0 by default, since a lane usually calls one origin.
 - A request's block adds to it through calls that take `req`, so the request's buffers
   stay the call's own. Its failures are `http::Error`s, `call` naming the step.
 
