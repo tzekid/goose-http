@@ -835,7 +835,8 @@ another origin's requests. With `via`, `via`'s address is the proxy's. Shown in
   and proxy; `http::free` closes them all. Shown in `test/client/client_idle.goose`.
 - It writes `Host`, `User-Agent: goose-http`, `Accept: */*`, `Content-Type`, and
   `Content-Length` itself, and decodes a chunked body. It skips a 1xx before the final
-  response. It doesn't keep cookies or decode a compressed body.
+  response. It doesn't keep cookies, and decodes a compressed body only through
+  `http.client_decoding` ([below](#compressed-responses)).
 - It follows up to `Session.redirects` redirects, 0 by default, and none for a negative
   number, so that a redirect is the response: a 301, 302, 303, 307, or 308 with a
   `Location`, which may be relative. A 303, and a 301 or 302 to a POST, go on as a GET
