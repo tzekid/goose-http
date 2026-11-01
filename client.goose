@@ -537,8 +537,9 @@ struct ClientExchange {
     body: BodyReader = BodyReader.None,
     chunked: bool = false,
     // A body that ends when the connection does, which can't be reused; and
-    // a request whose body the server answered before it was sent, whose
-    // connection can't carry another either.
+    // a connection that can't carry another request either: one whose body
+    // the server answered before it was sent, or an HTTP/1.0 one the server
+    // didn't keep alive.
     to_close: bool = false,
     last: bool = false,
     // A body the program writes, as stream declared it: its length, -1 for
@@ -706,13 +707,21 @@ fn response(s: Session&, x: ClientExchange&) -> Error {
         if verdict == READ_COMPLETE {
             x.status = h.status;
             x.fields.append(x.held[h.eol..h.end - 2]);
+            // An HTTP/1.0 connection ends with its response unless the
+            // server keeps it alive (RFC 9112 §9.3).
+            if x.held[7] == '0' {
+                let connection, has = field_in(x.fields, "Connection");
+                if !has || !has_token(connection, "keep-alive") { x.last = true; }
+            }
             drop_front(x.held, h.end);
             x.headed = true;
             x.chunked = h.chunked;
-            guard s.max_body < 0 || h.length <= s.max_body else { return failed(s, x, client_error("response")); }
             if x.head_only || h.status == 204 || h.status == 304 || h.length == 0 && !h.chunked {
                 x.done = true;
-            } else if h.chunked {
+                return no_error();
+            }
+            guard s.max_body < 0 || h.length <= s.max_body else { return failed(s, x, client_error("response")); }
+            if h.chunked {
                 x.body = BodyReader.ChunkSize;
             } else if h.length > 0 {
                 x.body = BodyReader.Length { left: h.length };
@@ -803,6 +812,9 @@ fn read(s: Session&, x: ClientExchange&, buf: u8[:]) -> i64, Error {
                 return n, no_error();
             }
         }
+        // What's held now is framing that hasn't come whole, a chunk's size
+        // line or the trailer section, which gets no more room than a head.
+        guard x.held.len <= MAX_RESPONSE_HEAD else { return 0, failed(s, x, client_error("response")); }
         guard !expired(x.until) else { return 0, failed(s, x, Error { call: "recv", code: ETIMEDOUT }); }
         let n, e = take(s, more, x.until);
         guard e.code == 0 else { return 0, failed(s, x, e); }
@@ -835,17 +847,28 @@ fn end(s: Session&, x: ClientExchange&) {
         return;
     }
     let connection, has = field_in(x.fields, "Connection");
-    let keep = x.done && !x.failed && !x.to_close && !x.last && x.held.len == 0 && !(has && has_close(connection));
+    let keep = x.done && !x.failed && !x.to_close && !x.last && x.held.len == 0
+        && !(has && has_token(connection, "close")) && !tls_holds_more(s);
     if !keep { hangup(s); }
     s.busy = false;
     x.failed = !keep || x.failed;
 }
 
-// Whether a Connection field's value lists close.
-fn has_close(value: const u8[:]) -> bool {
+// Whether list, comma-separated, holds token, ignoring ASCII case.
+fn has_token(list: const u8[:], token: const u8[:]) -> bool {
     var found = false;
-    each_split(value, ',') { if same_name(trim(it), "close") { found = true; } };
-    return found;
+    each_split(list, ',') { if same_name(trim(it), token) { found = true; } };
+    return found && token.len > 0;
+}
+
+// Whether TLS holds bytes of the connection's that no read took, which the
+// socket's own check before a reuse can't see: more after the response, or a
+// close_notify. A read straight into a program's buf takes only what the
+// body's framing asks for, and leaves the rest decrypted in TLS.
+fn tls_holds_more(s: Session&) -> bool {
+    guard tls::ok(s.c) else { return false; }
+    var probe: u8[1] = [0];
+    return tls::read(s.c, probe) != tls::WANT_INPUT;
 }
 
 // Closes the connection after a failure of x's, and returns the failure.

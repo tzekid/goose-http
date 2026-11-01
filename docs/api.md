@@ -885,10 +885,11 @@ http::end(session, x);
 | `http::begin(s, method, url) { req => ... }` | Sends the request, as `http::request` does, and returns an `http::ClientExchange` and an `http::Error` once it's sent. It doesn't follow redirects |
 | `http::response(s, x) -> Error` | Reads the response's head into `x.status` and `x.fields`, skipping up to 16 1xx before it |
 | `http::read(s, x, buf) -> i64, Error` | Reads the next bytes of the body into `buf`, and the head first if `response` hasn't: how many, or 0 once the body has ended; a chunked body's trailer fields are then in `x.trailers`. Data whose length the framing knows goes straight into `buf` |
-| `http::end(s, x)` | Keeps the connection for the session's next request only if the response was read whole, its body didn't end with the connection, and the server didn't ask to close it; otherwise closes it, so an unread body is never taken for the next response |
+| `http::end(s, x)` | Keeps the connection for the session's next request only if the response was read whole, nothing came after it, its body didn't end with the connection, and the server didn't ask to close it, nor answer HTTP/1.0 without `keep-alive`; otherwise closes it, so an unread body or stray bytes are never taken for the next response |
 
 `Session.max_body` limits the body as sent, -1 for none, and `Session.total_ms` the
-exchange as a whole, from `begin` to the body's end. A body past the limit, one cut
+exchange as a whole, from `begin` to the body's end. A chunk's size line or a trailer
+section gets no more than a head's 8 KB while it comes. A body past the limit, one cut
 short, and any failure close the connection, and the calls after it fail with
 `response`. `http::request` and its forms are this, with the body collected. A session
 carries one exchange at a time: a request begun on it before `end` ends the one before

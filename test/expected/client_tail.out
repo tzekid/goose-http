@@ -1,0 +1,4 @@
+http /one: '' 200 'hello', connection kept true
+http /two: '' 200 'good conn2'
+https /one: '' 200 'hello', connection kept false
+https /two: '' 200 'good conn2'

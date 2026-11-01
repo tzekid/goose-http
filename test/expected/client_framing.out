@@ -1,0 +1,7 @@
+a HEAD whose Content-Length is past max_body: '' 200
+a 304 whose Content-Length is past max_body: '' 304
+/ext that never ends: 0 bytes, 'response', held at most a head true
+/trailer that never ends: 5 bytes, 'response', held at most a head true
+HTTP/1.0: '' connection 3, kept false
+  the next: '' connection 4
+HTTP/1.0 with keep-alive: '' connection 4, kept true

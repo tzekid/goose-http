@@ -181,13 +181,6 @@ fn ws_owns_field(lines: const u8[:]) -> bool {
     return false;
 }
 
-// Whether list, comma-separated, holds token, ignoring ASCII case.
-fn has_token(list: const u8[:], token: const u8[:]) -> bool {
-    var found = false;
-    each_split(list, ',') { if same_name(trim(it), token) { found = true; } };
-    return found && token.len > 0;
-}
-
 // Sends a message, op WS_TEXT or WS_BINARY, in one masked frame, within
 // ws.conn.ms. Text must be UTF-8. EPIPE once the connection is closed; a
 // failed send closes it.
