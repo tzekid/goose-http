@@ -686,8 +686,7 @@ Encrypt's directory need a name. `connect_start` still fails a name with `ENOSYS
 `resolve`, since `getaddrinfo` would block the loop. This replaces "a host is
 `localhost`, a literal, or `unix:PATH`" for the blocking call. Rejected for now: a
 resolver for the loop, on a lane or with a DNS client of its own, which waits until a
-handler needs a name; and Happy Eyeballs, racing IPv6 against IPv4, for a call a lane
-makes once per connection.
+handler needs a name.
 
 **The lookup within the time limit (2026-10-25).** The call's time limit covers the
 lookup too, which `getaddrinfo` can't bound, so that a name whose server doesn't answer
@@ -699,6 +698,16 @@ than pile up threads. It's C because Goose's typed queues are one per type for t
 process: a result that comes after its caller stopped waiting would go to whichever
 thread waits for one next, and the bound is a count every thread changes. The cost is a
 thread per lookup with a limit.
+
+**Happy Eyeballs (2026-10-25).** A name's addresses are raced as RFC 8305 has it, rather
+than tried in turn: the families take turns from the first address's, and the next
+connect starts 250 ms after the one before, or as soon as it fails, with up to 4 going
+at once; the first to connect wins. In turn, an address that drops the SYN, as a host
+with broken IPv6 does, took the whole time limit, and no address after it was tried, so
+a client that connects once, such as a command-line program or a lane's first request,
+failed where the next address would have answered. The cost is up to 4 sockets for
+one connect, and `net_poll_any` in each platform's shim to wait on them together.
+Rejected before, on 2026-10-22, for a call a lane makes once per connection.
 
 Rejected: a lane that holds every worker's pool (above); the loop reading outbound
 sockets as it reads accepted ones (above); a blocking socket with `SO_RCVTIMEO` and
