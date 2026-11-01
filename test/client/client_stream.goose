@@ -3,8 +3,8 @@
 // with how much the exchange ever held; a chunked body with extensions and
 // trailers, sent a byte at a time; a body that ends with the connection; a
 // body left half read, whose connection the next request doesn't reuse; one
-// cut short; two 1xx before a response; a body past Session.max_body; and
-// 2 MB over TLS from the package's own server.
+// cut short; two 1xx before a response; a body past Session.max_body; an
+// exchange ended twice; and 2 MB over TLS from the package's own server.
 import std;
 import os;
 import http from "../../";
@@ -80,6 +80,7 @@ thread_fn peer(lfd: i32) {
                 send_text(fd, "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n");
                 send_text(fd, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfinal");
             } else {
+                if path == "/slow" { sleep_ms(200); }
                 format(out, "connection ", serial);
                 var head: u8[>..] = [];
                 format(head, "HTTP/1.1 200 OK\r\nContent-Length: ", out.len, "\r\n\r\n", out);
@@ -202,6 +203,21 @@ fn main() {
     let third, te = http::get(s, str(url, "/who"));
     print("begun again before the end: the second on ", second.body, ", the first ", le.call,
           ", the third on ", third.body);
+
+    // An exchange ended twice, the second time after the next one began on
+    // its kept connection, doesn't let a request in between take that one's
+    // response, which the peer holds back so that it can't show the
+    // connection busy.
+    var once, oe = get(s, url, "/who");
+    let once_body, ob = text_of(s, once);
+    http::end(s, once);
+    var next, ne = http::begin(s, "GET", str(url, "/slow"));
+    http::end(s, once);
+    let between, be = http::get(s, str(url, "/who"));
+    let next_body, nb = text_of(s, next);
+    http::end(s, next);
+    print("ended twice: the one between on a connection of its own ", between.body != once_body,
+          ", the next ", nb.call);
 
     var chain: u8[>..] = [];
     var key: u8[>..] = [];

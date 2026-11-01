@@ -76,8 +76,9 @@ struct Session {
     peer: u8[..600],
     // Whether the connection is in an exchange that begin started and end
     // hasn't ended, so that it isn't reused or kept for another request; and
-    // which connection it is, one more each time the session opens or takes
-    // one, so that an exchange begun on an earlier one doesn't touch it.
+    // one more each time a request or a WebSocket takes a connection, new or
+    // reused, so that an exchange begun before, ended or not, doesn't touch
+    // it.
     busy: bool = false,
     serial: i64 = 0,
     // The connections kept for other origins, the oldest first.
@@ -558,7 +559,7 @@ struct ClientExchange {
     // body data, held[run..run_end], that a smaller buf didn't take.
     run: i64 = 0,
     run_end: i64 = 0,
-    // The session's serial for the connection the exchange began on.
+    // The session's serial when the exchange began.
     serial: i64 = 0,
     held: u8[>..],
 }
@@ -854,9 +855,9 @@ fn failed(s: Session&, x: ClientExchange&, e: Error) -> Error {
     return e;
 }
 
-// Whether x may go on: it hasn't failed, and its connection is still the
-// session's. A request begun on the session since, before x ended, took
-// the connection, and x fails without touching the new one.
+// Whether x may go on: it hasn't failed, and no request or WebSocket has
+// taken a connection from the session since x began. One that has fails x
+// without x touching that connection, even after end.
 fn current(s: const Session&, x: ClientExchange&) -> bool {
     if x.serial != s.serial { x.failed = true; }
     return !x.failed;
@@ -892,7 +893,10 @@ fn open(s: Session&, u: Url, until: i64 = -1, tunnel: bool = false) -> Error {
         // A connection the server has closed, or that holds bytes nothing
         // asked for, such as TLS's close_notify, isn't reused.
         var probe: u8[1] = [0];
-        if recv(s.s, probe, 0) == -ETIMEDOUT { return no_error(); }
+        if recv(s.s, probe, 0) == -ETIMEDOUT {
+            s.serial++;
+            return no_error();
+        }
         hangup(s);
     }
     park(s);
