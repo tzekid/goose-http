@@ -1,7 +1,7 @@
 // The blocking calls of an outbound connection (socket.goose), for a thread
 // that runs no loop, against a server thread in the program: a connect and
 // a round trip, a large send, a server that closes, a refused connect, a
-// connect that times out against a full backlog, a name resolved, and one
+// full backlog that times out or resets the connect, a name resolved, and one
 // that can't be.
 import std;
 import http from "../../";
@@ -132,8 +132,8 @@ fn main() {
     s, e = http::connect("127.0.0.1", gone_port, 5000);
     print("refused: ", e.call, " ", e.code == http::ECONNREFUSED, ", socket ", s.fd);
 
-    // A listener that never accepts, its backlog full: the kernel drops the
-    // next SYNs, and the connect times out.
+    // A full backlog drops SYNs on Linux. macOS can reset a completed
+    // handshake; getpeername can then report EINVAL instead of ECONNRESET.
     let full, full_port = listener(1);
     var fillers: http::Socket[>..] = [];
     for i in 8 {
@@ -141,8 +141,19 @@ fn main() {
         assert(fe.code == 0);
         fillers.push(f);
     }
+    let began = http::net_clock_ms();
     s, e = http::connect("127.0.0.1", full_port, 300);
-    print("timed out: ", e.call, " ", e.code == http::ETIMEDOUT, ", socket ", s.fd);
+    if e.code == 0 {
+        assert(http::recv(s, buf, 300) == -http::ECONNRESET);
+        http::hangup(s);
+    } else {
+        let rejected = e.call == "connect" &&
+            (e.code == http::ETIMEDOUT || e.code == http::ECONNRESET || e.code == http::EINVAL);
+        if !rejected { print(e); }
+        assert(rejected);
+    }
+    assert(http::net_clock_ms() - began < 1500);
+    print("full backlog: socket ", s.fd);
     for i in fillers.len { http::hangup(fillers[i]); }
     http::net_close(full);
 

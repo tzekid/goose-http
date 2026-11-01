@@ -1,7 +1,7 @@
 // Outbound connections on serve_epoll's loop and serve's (socket.goose): each
 // route connects to a backend thread in the program, waits with wait_socket,
 // and answers with what came back: a round trip, a large send, a backend that
-// closes, a refused connect, a connect that times out against a full backlog,
+// closes, a refused connect, a full backlog that times out or resets the connect,
 // and a socket hung up at TIMEOUT, which the backend must see closed before
 // it takes the next connection. On io_uring, a socket that becomes readable
 // after its wait timed out doesn't wake the exchange's next wait. A handler
@@ -189,7 +189,11 @@ fn handle(ev: http::Event, st: St&, out: http::Reply, ports: Ports, large: const
         }
         guard c.code == 0 else { failed(st, out, c); return; }
         st.connecting = false;
-        if st.route == PING { assert(http::send(st.s, "pp") == 2); }
+        if st.route == PING {
+            let n = http::send(st.s, "pp");
+            if n < 0 { failed(st, out, http::Error { call: "send", code: -n }); return; }
+            assert(n == 2);
+        }
         if st.route == CLOSES { assert(http::send(st.s, "x") == 1); }
         if st.route == HANGUP || st.route == RESET || st.route == ANSWERED || st.route == BIG {
             assert(http::send(st.s, "w") == 1);
@@ -299,15 +303,34 @@ fn get(address: const u8[:], path: const u8[:]) -> u8[>..] {
 }
 
 fn on_epoll(address: const u8[:], path: const u8[:]) {
-    print(path, ": ", get(address, path));
+    let got = get(address, path);
+    if path == "/timeout" {
+        assert(backlog_failure(got));
+        print(path, ": full backlog");
+    } else {
+        print(path, ": ", got);
+    }
+}
+
+// A full backlog may reset a completed handshake; macOS can report that as
+// EINVAL from getpeername, or as a send or receive error after connected.
+fn backlog_failure(got: const u8[:]) -> bool {
+    got == "HTTP/1.1 504 Gateway Timeout: connect timed out" ||
+    got == "HTTP/1.1 502 Bad Gateway: connect 104" ||
+    got == "HTTP/1.1 502 Bad Gateway: connect 22" ||
+    got == "HTTP/1.1 502 Bad Gateway: send 104" ||
+    got == "HTTP/1.1 502 Bad Gateway: send 32" ||
+    got == "HTTP/1.1 502 Bad Gateway: recv 104"
 }
 
 // A route on serve's loop: on io_uring, answered as want says; on the
 // emulated ring, wait_socket's ENOSYS, or a refusal before it.
 fn on_ring(address: const u8[:], path: const u8[:], want: const u8[:], native: bool) {
     let got = get(address, path);
-    let ok = if native { got == want } else {
-        got == "HTTP/1.1 502 Bad Gateway: wait_socket ENOSYS" || got == "HTTP/1.1 502 Bad Gateway: connect refused"
+    let ok = if native { got == want || path == "/timeout" && backlog_failure(got) } else {
+        got == "HTTP/1.1 502 Bad Gateway: wait_socket ENOSYS" ||
+        got == "HTTP/1.1 502 Bad Gateway: connect refused" ||
+        path == "/timeout" && got == "HTTP/1.1 502 Bad Gateway: connect 104"
     };
     if !ok { print("serve ", path, ": ", got); }
     print("serve ", path, ": ", ok);

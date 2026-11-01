@@ -4,7 +4,7 @@ large: 8388607 bytes counted, then 0
 closed: 0
 send after the close: true
 refused: connect true, socket -1
-timed out: connect true, socket -1
+full backlog: socket -1
 a name: code 0, socket true
 no such name: resolve true, socket -1
 a name, port 0: connect true

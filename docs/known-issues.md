@@ -193,6 +193,12 @@ its references (2026-10-30).
   after the other's `many`; a distinct `PORT` doesn't help.
 - `kern.ipc.somaxconn` defaults to 128, limiting the listen backlog. The tests pass
   there; `sudo sysctl kern.ipc.somaxconn=4096` raises it until reboot.
+- A full TCP listen backlog need not time out a connect. On macOS 27.2 the connect
+  can complete before the kernel resets it, or fail with `ECONNRESET` instead.
+  A reset between the `SO_ERROR` and `getpeername` checks can make the latter report
+  `EINVAL`, also reproduced with Python's sockets.
+  The outbound tests accept either a timeout or a reset, require a closed socket,
+  and reject other errors (2026-11-01).
 - `lsof` resolves `/var` and `/tmp` through `/private`. Match resolved paths when
   checking open files.
 - Apple's `nc -N` means keepalive probes, not OpenBSD's shutdown-after-input.
