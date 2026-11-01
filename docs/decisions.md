@@ -684,11 +684,21 @@ name with `getaddrinfo` in the shim, and tries its addresses in the resolver's o
 within the call's time limit: a lane may block, and goose-acme's requests to Let's
 Encrypt's directory need a name. `connect_start` still fails a name with `ENOSYS` from
 `resolve`, since `getaddrinfo` would block the loop. This replaces "a host is
-`localhost`, a literal, or `unix:PATH`" for the blocking call. The time limit doesn't
-cover the lookup, which `getaddrinfo` can't bound; the system resolver's own timeouts
-apply. Rejected for now: a resolver for the loop, on a lane or with a DNS client of its
-own, which waits until a handler needs a name; and Happy Eyeballs, racing IPv6 against
-IPv4, for a call a lane makes once per connection.
+`localhost`, a literal, or `unix:PATH`" for the blocking call. Rejected for now: a
+resolver for the loop, on a lane or with a DNS client of its own, which waits until a
+handler needs a name; and Happy Eyeballs, racing IPv6 against IPv4, for a call a lane
+makes once per connection.
+
+**The lookup within the time limit (2026-10-25).** The call's time limit covers the
+lookup too, which `getaddrinfo` can't bound, so that a name whose server doesn't answer
+fails within it rather than after the system resolver's own timeouts, 5 s and more.
+`net_resolve_within`, in `shim/resolve.c`, runs the lookup on a thread of its own and
+stops waiting at the limit; the thread finishes alone, since no system resolver can be
+stopped midway. At most 32 run at once, so lookups that hang fail with `EAGAIN` rather
+than pile up threads. It's C because Goose's typed queues are one per type for the whole
+process: a result that comes after its caller stopped waiting would go to whichever
+thread waits for one next, and the bound is a count every thread changes. The cost is a
+thread per lookup with a limit.
 
 Rejected: a lane that holds every worker's pool (above); the loop reading outbound
 sockets as it reads accepted ones (above); a blocking socket with `SO_RCVTIMEO` and

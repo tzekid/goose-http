@@ -28,6 +28,7 @@ compilation:
 | `shim/ring_epoll.c` | Linux, macOS | The ring emulated over epoll or kqueue, where io_uring is blocked, and always on macOS |
 | `shim/mail.c` | all | The boxes' bounded queue, and the list of loop wakers that `http::stop` wakes |
 | `shim/store.c` | all | The store's blobs, written once at startup and read by every thread |
+| `shim/resolve.c` | all | A name's lookup on a thread of its own, which the blocking `connect` stops waiting for at its time limit |
 
 Each is C for one of five reasons:
 
@@ -41,7 +42,8 @@ Each is C for one of five reasons:
 - **Atomics, and a wait another thread can end.** Goose threads share no memory and
   have no atomics, and a Goose thread can't end another's wait in the kernel. So
   `shim/mail.c` holds each box's slots and the counts its senders change atomically,
-  and each platform's waker ends a loop's wait.
+  each platform's waker ends a loop's wait, and `shim/resolve.c` counts its lookup
+  threads atomically, each of which ends its caller's wait once its lookup does.
 - **Memory every thread reads.** Goose shares only static data between threads, and
   copies every other global a worker uses when it's spawned. `shim/store.c` holds
   byte blobs a program writes once, before its workers read them.
