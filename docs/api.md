@@ -917,7 +917,9 @@ if err.code == 0 || err.code == http::EPIPE { err = http::response(session, x); 
 - `http::write` sends the bytes as they are, or as one chunk, within `Session.total_ms`.
   More than the `Content-Length` fails with call `body`, and so does `end_body` for
   fewer, each closing the connection. `http::request` and its forms fail a streamed body
-  with call `body`.
+  with call `body`. A server that refuses the body partway, as with 413, usually closes
+  the connection, and its answer is lost with it: `write` fails with `send`, `EPIPE` or
+  `ECONNRESET`. `http::expect_continue` lets it refuse before the body instead.
 - `http::expect_continue(req)` sends `Expect: 100-continue` and holds the body, a
   streamed one or one from `http::body` or `http::json`, until the server answers 100
   Continue, or for `Session.expect_ms`, 1,000 by default (-1: until it answers, a wait
