@@ -3,8 +3,9 @@
 // what that server doesn't: a whole gzip body, and a streamed one flushed
 // piece by piece, read 1,000 bytes at a time; then from the peer, a zlib body
 // (HTTP's deflate), an identity body, a gzip body whose CRC is wrong, one cut
-// short, br, a chain of two codings, 10 MB of zeros against a 1 MB limit, and
-// a HEAD's response and an empty body, which name gzip but have no body.
+// short, br, a chain of two codings, 10 MB of zeros against a 1 MB limit, a
+// HEAD's response and an empty body, which name gzip but have no body, and a
+// deflate body whose last read ends where its input does.
 import std;
 import os;
 import http from "../../";
@@ -13,6 +14,15 @@ import compress from "github.com/tzekid/goose-compress@81aedc4ac044a458a9124337d
 import http.compression;
 import http.client;
 import http.client_decoding;
+
+// 40,000 'a', as zlib: decoded 10,000 bytes a read, its last read's bytes
+// end where its input does, with the stream's end still held.
+let AS_ZLIB: u8[62] = [
+    0x78, 0x9c, 0xed, 0xc1, 0x31, 0x01, 0x00, 0x00, 0x00, 0xc2, 0xa0, 0xac, 0xeb, 0x5f, 0xc2,
+    0xcb, 0x16, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37, 0x53, 0xd1,
+    0x37, 0xb6];
 
 struct St {
     coded: http::Compressed = http::Compressed { .. },
@@ -88,6 +98,9 @@ thread_fn peer(lfd: i32) {
         var coding = "gzip";
         if path == "/deflate" {
             compress::compress(plain, body, compress::ZLIB, 6);
+            coding = "deflate";
+        } else if path == "/as" {
+            body.append(AS_ZLIB);
             coding = "deflate";
         } else if path == "/identity" {
             body.append(plain);
@@ -199,6 +212,18 @@ fn main() {
     http::end(p, hx);
     print("no body to decode: a HEAD's ", he.code, " ", hr.body.len, ", an empty one's ", ee.code, " ",
           er.body.len, ", a HEAD's in pieces ", hre.code, " ", hn);
+    var ax, axe = http::begin(p, "GET", str(base, "/as")) { req => http::accept_compressed(req); };
+    var ad = http::BodyDecoder { .. };
+    var as_made = 0;
+    while axe.code == 0 {
+        var piece: u8[>..] = [];
+        let n, re = http::read_decoded(p, ax, ad, piece, 10000);
+        axe = re;
+        if n == 0 { break; }
+        as_made += n;
+    }
+    http::end(p, ax);
+    print("40,000 bytes of deflate, 10,000 a read: ", axe.code, ", ", as_made, " bytes");
     let q, qe = http::get(p, str(base, "/quit"));
     http::free(p);
     thread_wait(t);

@@ -60,12 +60,14 @@ fn decode_body(r: ClientResponse&, limit: i64 = DECODED_MAX) -> Error {
 }
 
 // A body read in pieces and decoded as it comes: the decoder, the limit on
-// what it makes, and the encoded bytes read but not decoded yet.
+// what it makes, whether it stopped at a call's limit, when it may hold more
+// whatever the input, and the encoded bytes read but not decoded yet.
 struct BodyDecoder {
     limit: i64 = DECODED_MAX,
     format: i64 = IDENTITY,
     started: bool = false,
     done: bool = false,
+    full: bool = false,
     made: i64 = 0,
     d: compress::Decoder = compress::Decoder { .. },
     buf: u8[16384] = [0; 16384],
@@ -99,7 +101,7 @@ fn read_decoded(s: Session&, x: ClientExchange&, b: BodyDecoder&, out: u8[>..]&,
     }
     let begin = out.len;
     loop {
-        if b.at < b.encoded.len {
+        if b.at < b.encoded.len || b.full {
             // One byte past the limit shows a body that goes past it. After
             // a stream's end, the decoder judges what follows: another gzip
             // member, or an error.
@@ -112,9 +114,10 @@ fn read_decoded(s: Session&, x: ClientExchange&, b: BodyDecoder&, out: u8[>..]&,
                 return 0, failed(s, x, client_error("response"));
             }
             b.done = status == compress::DECODE_DONE;
+            b.full = status == compress::DECODE_FULL;
             if b.done && b.at < b.encoded.len { return 0, failed(s, x, client_error("response")); }
             if out.len > begin { return out.len - begin, no_error(); }
-            if status == compress::DECODE_FULL { continue; }
+            if b.full { continue; }
         }
         b.encoded.clear();
         b.at = 0;
