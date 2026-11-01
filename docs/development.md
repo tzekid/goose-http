@@ -215,6 +215,19 @@ makes its test certificate with `openssl`:
 sudo apt-get install -y cmake libssl-dev openssl
 ```
 
+On an SELinux host that refuses TinyCC's writable, executable memory, build the
+pinned Goose release from source with TinyCC's SELinux option. It maps the generated
+code through separate writable and executable views of a temporary file, so the
+JIT works with SELinux enforcing:
+
+```sh
+CFLAGS=-DCONFIG_SELINUX=1 GOOSE_COMMIT=v2026.3 scripts/test.sh
+```
+
+`CFLAGS` applies at the first CMake configuration. For an existing source build,
+reconfigure it with `-DCMAKE_C_FLAGS=-DCONFIG_SELINUX=1` and rebuild it. This changes
+the compiler's build configuration, not the Goose pin or its source (2026-11-01).
+
 The benchmarks need more tools ([bench/README.md](../bench/README.md#toolchain)).
 
 On an image-based Fedora such as Bazzite or Silverblue, the tools go in a distrobox,
