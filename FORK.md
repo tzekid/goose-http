@@ -1,8 +1,9 @@
 # This fork
 
-tzekid/goose-http's `work` branch is kaitk/goose-http's `main`, which `main` here mirrors,
-with changes meant to go upstream as small pull requests. Each change below is a few
-commits that touch only its files, so that it can be cherry-picked onto a fresh upstream
+tzekid/goose-http's `work` branch is based on kaitk/goose-http's `v0.5.16`
+(`e0722c46`), rebased on 2026-11-01, with changes meant to go upstream as small pull
+requests. Each change below is a few commits that touch only its files, so that it
+can be cherry-picked onto a fresh upstream
 `main` and sent alone. None has been sent upstream yet. This file is the fork's own, and
 goes in no pull request.
 
@@ -15,31 +16,32 @@ example.
 
 | # | Change | Commits | Depends on |
 |---|---|---|---|
-| 1 | v0.5.12 doesn't build on macOS: `shim/kqueue.c` uses `IPV6_DONTFRAG`, which Apple's headers declare only for RFC 3542's API. Plod's examples can't build on a Mac until it's fixed | `a86cfd6e` | — |
-| 2 | `Session.total_ms`: one limit on a request as a whole, however steadily bytes come | `b3a8da0a` | — |
-| 3 | `Session.redirects`: redirects followed, with RFC 9110's method rules, credentials dropped across origins, and no https-to-http | `b6aa0999`, `06925cf3` | 2 |
-| 4 | `connect`'s `deny` and `Session.deny`: classes of address refused at the dial, IPv4 inside IPv6 judged as IPv4 | `a00b2818`, `7d5dd01a` | — |
-| 5 | `http.websocket_client`: a blocking WebSocket client | `836eef85`, `81210f5e` | 2 |
-| 6 | `begin`, `response`, `read`, `end`: a response's body in pieces, the buffered calls rebuilt on them | `5dd96706`, `39cf31d7` | 2 |
-| 7 | `stream`, `write`, `end_body`, `expect_continue`: a request's body in pieces, and 100 Continue | `35560338`, `5aa232f1` | 6 |
-| 8 | `shim/resolve.c`: a name's lookup bounded by connect's limit, on a thread of its own | `4c7ea475` | — |
-| 9 | Happy Eyeballs: `race`, and `net_poll_any` in each shim | `6838b7b8` | 8 |
-| 10 | `Session.proxy`: an HTTP proxy, with CONNECT for TLS and WebSockets | `a8b9f75f` | 6 |
-| 11 | `Session.max_idle`: connections kept for other origins | `848f06b7` | 6 |
-| 12 | `http.client_decoding`: gzip and deflate responses decoded | `ace62583` | 6, and goose-compress's decoder released |
+| 1 | `Session.total_ms`: one limit on a request as a whole, however steadily bytes come | `bc3f75e0` | — |
+| 2 | `Session.redirects`: redirects followed, with RFC 9110's method rules, credentials dropped across origins, and no https-to-http | `b2e0202d`, `c9f29809` | 1 |
+| 3 | `connect`'s `deny` and `Session.deny`: classes of address refused at the dial, IPv4 inside IPv6 judged as IPv4 | `57919226`, `448e0e72` | — |
+| 4 | `http.websocket_client`: a blocking WebSocket client | `2c5cb4d6`, `3599c2a2` | 1 |
+| 5 | `begin`, `response`, `read`, `end`: a response's body in pieces, the buffered calls rebuilt on them | `2e0e5e95`, `3736b2ed` | 1 |
+| 6 | `stream`, `write`, `end_body`, `expect_continue`: a request's body in pieces, and 100 Continue | `975c0aaa`, `eb3e2044` | 5 |
+| 7 | `shim/resolve.c`: a name's lookup bounded by connect's limit, on a thread of its own | `91c0dbdf` | — |
+| 8 | Happy Eyeballs: `race`, and `net_poll_any` in each shim | `da431921` | 7 |
+| 9 | `Session.proxy`: an HTTP proxy, with CONNECT for TLS and WebSockets | `408bd9a9` | 5 |
+| 10 | `Session.max_idle`: connections kept for other origins | `816e9efb` | 5 |
+| 11 | `http.client_decoding`: gzip and deflate responses decoded | `af146437` | 5, and goose-compress's decoder released |
 
 Fork-only commits, which go in no pull request:
 
-- `f431de6c` pins goose-compress to the fork's commit with the decoder, so that 12
+- `7a90da9a` pins goose-compress to the fork's commit with the decoder, so that 11
   builds here; upstream, that becomes a move to the goose-compress release that has it.
 - This file, and the README's status rows, which describe all of the above at once.
 
-Before the first pull request: none of kaitk's repositories has a license file, which
-contributions need settled.
+The macOS `IPV6_DONTFRAG` build fix is already in upstream `v0.5.13`, so the rebase
+drops the fork's duplicate. Upstream now has MIT and Apache-2.0 licenses. The rebase
+keeps both `shim/shared.c` and `shim/resolve.c` in each platform's build sidecar.
 
 ## How each was checked
 
-Each change has its tests in `test/`, as the repository's convention has them, which
+The original changes were checked on 2026-10-25 as follows. Each change has its tests
+in `test/`, as the repository's convention has them, which
 `test/run_tests.py` runs at `-O0` and `-O2`:
 
 - macOS 27.0.1 (arm64): every test passes but two that fail on `main` too:
@@ -70,4 +72,24 @@ Probes measured what a test can't set up, once, and were deleted:
 
 No benchmark ran: only the blocking client's and connect's paths changed, and none of
 the loops' or the server's request path. The pull requests that touch `socket.goose`
-(4, 8, 9) should still get the maintainer's run of `bench/count.sh`.
+(3, 7, 8) should still get the maintainer's run of `bench/count.sh`.
+
+## Rebase checks (2026-11-01)
+
+The rebase uses Goose `v2026.3`, still the latest official release.
+
+- Linux arm64, Ubuntu 26.04: all 85 tests pass at `-O0` and `-O2` as compiled
+  programs.
+- macOS 27.2 arm64: 83 of 85 tests pass at both levels. `outbound_blocking` and
+  `outbound_loop` still fail their full-backlog timeout expectations; both also fail
+  on untouched upstream `e0722c46` at both levels. The package loads through the JIT.
+- macOS: the drain, upgraded-timeout, stale-reply, shared-send, and worker-mail
+  end-to-end checks pass. h2spec passes all 146 cases over h2c and all 146 over TLS
+  on each loop, and every example passes. One earlier h2spec run timed out over TLS;
+  both loop runs passed on retry. The full HTTP server script stops at its 10,000
+  client test with a connection timeout or reset, also reproduced on untouched
+  upstream. The echo script stops at a concurrent-client connection reset.
+  Neither full script has a passing macOS run in this validation.
+- Windows: the resolver and socket shims compile with
+  `zig cc -target x86_64-windows-gnu -std=c11 -Wall -Wextra` without warnings.
+  Windows runtime checks remain pending.
