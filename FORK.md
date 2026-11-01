@@ -38,6 +38,15 @@ The macOS `IPV6_DONTFRAG` build fix is already in upstream `v0.5.13`, so the reb
 drops the fork's duplicate. Upstream now has MIT and Apache-2.0 licenses. The rebase
 keeps both `shim/shared.c` and `shim/resolve.c` in each platform's build sidecar.
 
+Follow-up test and setup fixes, each independent of the client features above:
+
+- `a3132533` accepts macOS's full-backlog resets in the outbound tests, including a
+  reset seen during the first send or as `EINVAL` from `getpeername`. The blocking
+  test still bounds the wait and requires the socket to close.
+- `4388a2f3` builds the server before parallel tests, using the same C compiler
+  command for both, so a cold shared CMake cache is ready before the tests use it.
+- `eb53dcbb` documents TinyCC's SELinux build option for the pinned Goose release.
+
 ## How each was checked
 
 The original changes were checked on 2026-10-25 as follows. Each change has its tests
@@ -74,22 +83,27 @@ No benchmark ran: only the blocking client's and connect's paths changed, and no
 the loops' or the server's request path. The pull requests that touch `socket.goose`
 (3, 7, 8) should still get the maintainer's run of `bench/count.sh`.
 
-## Rebase checks (2026-11-01)
+## Checks after the rebase and test fixes (2026-11-01)
 
 The rebase uses Goose `v2026.3`, still the latest official release.
 
-- Linux arm64, Ubuntu 26.04: all 85 tests pass at `-O0` and `-O2` as compiled
-  programs.
-- macOS 27.2 arm64: 83 of 85 tests pass at both levels. `outbound_blocking` and
-  `outbound_loop` still fail their full-backlog timeout expectations; both also fail
-  on untouched upstream `e0722c46` at both levels. The package loads through the JIT.
+- Linux arm64, Ubuntu 26.04, gcc 15.2, kernel 7.2.7: `scripts/test.sh` passes from an
+  empty compiled dependency cache. All 85 tests pass at `-O0` and `-O2`, as does the
+  JIT check. Goose was built from the release's unchanged source with
+  `CONFIG_SELINUX=1`, and the full suite ran with SELinux enforcing. The HTTP, TLS,
+  drain, shared-send, worker-mail, and echo checks pass on native io_uring, epoll, and the emulated ring
+  where each applies, including the 10,000-client HTTP and echo runs. Every example
+  passes. h2spec is skipped because its release has no Linux arm64 binary.
+- macOS 27.2 arm64: all 85 regression cases pass across the full run and targeted
+  reruns of the corrected outbound fixtures at both levels. The blocking fixture
+  also passes 64 concurrent stress runs under CPU load. The package loads through
+  the JIT.
 - macOS: the drain, upgraded-timeout, stale-reply, shared-send, and worker-mail
   end-to-end checks pass. h2spec passes all 146 cases over h2c and all 146 over TLS
-  on each loop, and every example passes. One earlier h2spec run timed out over TLS;
-  both loop runs passed on retry. The full HTTP server script stops at its 10,000
-  client test with a connection timeout or reset, also reproduced on untouched
-  upstream. The echo script stops at a concurrent-client connection reset.
-  Neither full script has a passing macOS run in this validation.
+  on each loop, and every example passes. The full HTTP and echo scripts still
+  fail their high-connection runs on this host. An independent Python TCP listener
+  also fails as connections accumulate, so host diagnostics remain pending; neither
+  full script has a passing macOS run in this validation.
 - Windows: the resolver and socket shims compile with
   `zig cc -target x86_64-windows-gnu -std=c11 -Wall -Wextra` without warnings.
   Windows runtime checks remain pending.
