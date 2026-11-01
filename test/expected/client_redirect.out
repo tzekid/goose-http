@@ -1,5 +1,7 @@
 == none followed
 GET http://localhost/r/301: 301 to /echo
+GET http://localhost/r/301: 301 to /echo
+GET http://localhost/echo: 200: GET /echo host=localhost auth=Bearer k-1 cookie=id=7 key=v type= body=
 == followed
 POST http://localhost/r/301: 200: GET /echo host=localhost auth=Bearer k-1 cookie=id=7 key=v type= body=
 POST http://localhost/r/302: 200: GET /echo?from=302 host=localhost auth=Bearer k-1 cookie=id=7 key=v type= body=

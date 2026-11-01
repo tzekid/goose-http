@@ -40,8 +40,8 @@ struct Session {
     // How long a request that asked for 100 Continue (expect_continue)
     // waits for it before it sends its body anyway (-1: until an answer).
     expect_ms: i64 = 1000,
-    // The most redirects a request follows (0: none, a redirect is the
-    // response), as follow describes.
+    // The most redirects a request follows (0 or less: none, a redirect is
+    // the response), as follow describes.
     redirects: i64 = 0,
     // The classes of address the session doesn't connect to, as connect's
     // DENY_ bits (0: none), for a program that requests URLs from outside:
@@ -229,7 +229,7 @@ fn follow(s: Session&, method: const u8[:], url: const u8[:], req: const ClientR
     at.append(url);
     var credentials = true;
     var body = true;
-    for hop in s.redirects + 1 {
+    for hop in max(s.redirects, 0) + 1 {
         guard e.code == 0 && is_redirect(r.status) else { return r, e; }
         let location, has = header(r, "Location");
         guard has && s.redirects > 0 else { return r, e; }

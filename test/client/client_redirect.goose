@@ -4,7 +4,7 @@
 // to the request's path, with dot segments, and one that is a query; the
 // fields that carry credentials at a redirect to another origin and to the
 // same one; a loop, a downgrade from https, a Location of another scheme, a
-// redirect without one, and a session that follows none.
+// redirect without one, and a session that follows none, at 0 and at -1.
 import std;
 import os;
 import http from "../../";
@@ -125,6 +125,9 @@ fn main() {
     var session = http::session(5000);
     session.via.append(plain);
     send(session, "GET", "http://localhost/r/301");
+    session.redirects = -1;
+    send(session, "GET", "http://localhost/r/301");
+    send(session, "GET", "http://localhost/echo");
 
     print("== followed");
     session.redirects = 3;

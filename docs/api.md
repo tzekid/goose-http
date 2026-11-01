@@ -836,12 +836,13 @@ another origin's requests. With `via`, `via`'s address is the proxy's. Shown in
 - It writes `Host`, `User-Agent: goose-http`, `Accept: */*`, `Content-Type`, and
   `Content-Length` itself, and decodes a chunked body. It skips a 1xx before the final
   response. It doesn't keep cookies or decode a compressed body.
-- It follows up to `Session.redirects` redirects, 0 by default, so that a redirect is
-  the response: a 301, 302, 303, 307, or 308 with a `Location`, which may be relative.
-  A 303, and a 301 or 302 to a POST, go on as a GET without the body; the others repeat
-  the method and the body. At a redirect to another scheme, host, or port, the request
-  goes on without `Authorization`, `Cookie`, and `Proxy-Authorization`, and its other
-  fields as they were. `Session.total_ms` counts every request of the chain.
+- It follows up to `Session.redirects` redirects, 0 by default, and none for a negative
+  number, so that a redirect is the response: a 301, 302, 303, 307, or 308 with a
+  `Location`, which may be relative. A 303, and a 301 or 302 to a POST, go on as a GET
+  without the body; the others repeat the method and the body. At a redirect to another
+  scheme, host, or port, the request goes on without `Authorization`, `Cookie`, and
+  `Proxy-Authorization`, and its other fields as they were. `Session.total_ms` counts
+  every request of the chain.
 - Under TLS, a connection that ends without close_notify fails with `recv`, so a body
   that ends with the connection can't be cut short unnoticed.
 
