@@ -4,6 +4,17 @@ Environment traps and incidents met while building, testing, and benchmarking
 goose-http, grouped by platform. A date records when an incident happened. Setup steps
 are in [development](development.md).
 
+## Goose's compiled dependency cache
+
+Goose `v2026.3` (`8511ae3`) can race when parallel builds first compile the same
+CMake package: one starts `cmake --build` before another has created
+`CMakeCache.txt`. `scripts/test.sh` builds the server first to populate the shared
+cache before its parallel tests. When running `test/run_tests.py` directly with a
+cold cache, build the TLS server first with `TLS=1 scripts/build.sh`, and give both
+commands the same `CC`. Goose puts `cc` and `gcc` in the same cache directory when
+they are the same compiler, but changing the command invalidates its build. The
+suite defaults both builds to `gcc` on Unix and MSVC on Windows (2026-11-01).
+
 ## WSL2 on Windows
 
 ### wrk's clock in WSL2

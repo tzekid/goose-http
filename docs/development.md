@@ -113,15 +113,17 @@ port + 363 (`H2_PORT`, 8443 beside 8080).
 
 1. `goose --check` of each root file: `server/server.goose`, `server/server_epoll.goose`,
    `server/server_tls.goose`, and the examples listed in `scripts/test.sh`.
-2. `test/run_tests.py`: the tests in `test/` ([below](#run-the-tests-in-test)). Then, but
-   on Windows, one of them through the JIT, as `goose file.goose` runs a program, which
+2. `scripts/build.sh`: one TLS build for both Unix loops, or the IOCP build on
+   Windows, before parallel tests use its compiled dependencies. Then
+   `test/run_tests.py`: the tests in `test/` ([below](#run-the-tests-in-test)). Except
+   on Windows, one also runs through the JIT, as `goose file.goose` runs a program, which
    loads the package's library: a test's extern needs a sidecar of its own, or that
    library needs the extern's C (v0.5.14).
-3. For each loop, `scripts/build.sh` and then `scripts/test-http.sh`: uring and epoll on
+3. For each loop, `scripts/test-http.sh` against that build: uring and epoll on
    Linux and macOS, with `LOOP=uring-epoll` against the uring build on Linux too, and
    iocp on Windows. The uring and epoll loops' build is the TLS build (`TLS=1`), run
-   with `LOOP` set to the loop, whose TLS listener the tests take too. After the epoll
-   build's, `scripts/test-h2spec.sh`, which fetches
+   with `LOOP` set to the loop, whose TLS listener the tests take too. After each loop's
+   HTTP tests, `scripts/test-h2spec.sh`, which fetches
    h2spec v2.6.0 into `build/` and runs it against the h2c port, and against the h2
    over TLS port with `-t -k` and `GODEBUG=tls13=1`, since h2spec's Go 1.12 offers TLS
    1.3 only when asked and the server speaks no other. h2spec's only builds

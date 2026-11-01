@@ -1,9 +1,10 @@
 #!/bin/sh
 # Runs every test this repository has, and fails on the first failure: the
-# typecheck of the server's and the examples' root files, the tests in test/
+# typecheck of the server's and the examples' root files, a server build that
+# populates the shared dependency cache, the tests in test/
 # (test/run_tests.py, which typechecks and runs each one and reports every
-# failure among them), one of them through the JIT, then each loop's build of the server
-# (scripts/build.sh) with scripts/test-http.sh against it, which tests h2c
+# failure among them), one of them through the JIT, then scripts/test-http.sh
+# against each loop of that server, which tests h2c
 # too where the loop serves it, and TLS on each loop but iocp from one TLS
 # build (TLS=1), with full load runs on the first loop and short ones after,
 # scripts/test-h2spec.sh against each loop but iocp where h2spec has a binary,
@@ -27,8 +28,8 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 goose=$GOOSE
 os=$(uname -s)
 case $os in
-MINGW* | MSYS*) loops=iocp ;;
-*) loops="uring epoll" ;;
+MINGW* | MSYS*) loops=iocp; export CC="${CC:-msvc}" ;;
+*) loops="uring epoll"; export CC="${CC:-gcc}" ;;
 esac
 
 step() {
@@ -69,6 +70,16 @@ for f in "$root"/server/server.goose "$root"/server/server_epoll.goose "$root"/s
     "$goose" --check "$f"
 done
 
+# Build the server before parallel tests so their shared CMake dependencies
+# have a complete build directory before another compiler uses it.
+if [ "$loops" = iocp ]; then
+    step "LOOP=iocp build.sh"
+    LOOP=iocp "$root/scripts/build.sh"
+else
+    step "TLS=1 build.sh, for every loop"
+    TLS=1 LOOP=epoll "$root/scripts/build.sh"
+fi
+
 step "test/run_tests.py"
 python3 "$root/test/run_tests.py"
 
@@ -91,18 +102,7 @@ esac
 # The first test-http.sh run has the full load runs, and the others short ones
 # (LOAD=short): a loop's failure under load shows in either.
 load=full
-built=
 for loop in $loops; do
-    # The tests take the TLS listener too, from one TLS build, which serves
-    # either loop as LOOP says at run time; IOCP has no TLS.
-    if [ "$loop" = iocp ]; then
-        step "LOOP=$loop build.sh"
-        LOOP=$loop "$root/scripts/build.sh"
-    elif [ -z "$built" ]; then
-        step "TLS=1 build.sh, for every loop"
-        TLS=1 LOOP=epoll "$root/scripts/build.sh"
-        built=1
-    fi
     drain
     step "test-http.sh, $loop loop"
     LOAD=$load LOOP=$loop "$root/scripts/test-http.sh"
