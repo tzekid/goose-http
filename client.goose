@@ -460,6 +460,8 @@ fn parse_proxy(text: const u8[:]) -> Proxy, bool {
     if at >= 0 {
         p.userinfo = rest[..at];
         rest = rest[at + 1..];
+        var plain: u8[>..] = [];
+        guard decode(p.userinfo, plain) else { return p, false; }
     }
     guard find_any(rest, AUTHORITY_END) < 0 else { return p, false; }
     let host, port, ok = parse_authority(rest, 80);
@@ -995,9 +997,12 @@ fn open_tunnel(s: Session&, u: Url, p: Proxy, until: i64) -> Error {
     guard e.code == 0 else { return e; }
     var raw: u8[>..] = [];
     var buf: u8[4096] = [0; 4096];
+    var interim = 0;
     loop {
         let h, verdict = response_head(raw, false);
         if verdict == READ_COMPLETE && h.status < 200 {
+            interim++;
+            guard interim <= 16 else { return client_error("proxy"); }
             drop_front(raw, h.end);
             continue;
         }

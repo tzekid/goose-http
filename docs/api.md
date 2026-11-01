@@ -819,8 +819,8 @@ another origin's requests. With `via`, `via`'s address is the proxy's. Shown in
 `HTTPS_PROXY`, and offers no SOCKS, PAC, or TLS to the proxy itself.
 
 - A proxy that refuses the tunnel fails the request with call `proxy`: `EACCES` for 407,
-  `ECONNREFUSED` for another status. A `Session.proxy` that isn't `http://` with a host
-  fails it with `EINVAL`.
+  `ECONNREFUSED` for another status. A `Session.proxy` that isn't `http://` with a host,
+  or whose credentials aren't percent-encoded, fails it with `EINVAL`.
 - `deny` can't judge an origin's address through a proxy, which resolves it, so a
   session with both fails its requests with call `proxy` rather than claim to.
 

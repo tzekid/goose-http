@@ -4,8 +4,8 @@
 // whole URL in each request line and the proxy's credentials beside them; a
 // redirect to another origin, which drops the origin's credentials but not
 // the proxy's; an https:// request through a tunnel, with TLS checking the
-// URL's host; wrong credentials (407); deny with a proxy; and a proxy that
-// isn't http://.
+// URL's host; wrong credentials (407); deny with a proxy; a proxy that isn't
+// http://; and credentials that aren't percent-encoded.
 import std;
 import http from "../../";
 import tls from "github.com/kaitk/goose-tls@v0.0.6";
@@ -183,6 +183,10 @@ fn main() {
     wrong.proxy.append("socks5://127.0.0.1:1080");
     let r7, e7 = http::get(wrong, "http://origin.example/");
     print("not an http:// proxy: ", e7.call);
+    wrong.proxy.clear();
+    format(wrong.proxy, "http://user:50%zz@127.0.0.1:", proxy_port);
+    let r8, e8 = http::get(wrong, "http://origin.example/");
+    print("credentials not percent-encoded: ", e8.call);
     http::free(wrong);
 
     s.proxy.clear();
