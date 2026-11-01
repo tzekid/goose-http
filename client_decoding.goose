@@ -44,12 +44,13 @@ fn coding_of(fields: const u8[:]) -> i64 {
 }
 
 // Decodes r.body, in place, as r's Content-Encoding says, into at most limit
-// bytes: no error for a body that isn't compressed, which stays as it is;
-// call "response" for a coding this module doesn't decode, a stream that's
+// bytes: no error for a body that isn't compressed, or is empty, as a HEAD's,
+// a 204's, or a 304's is whatever the fields say, which stays as it is; call
+// "response" for a coding this module doesn't decode, a stream that's
 // corrupt or cut short, or one past limit.
 fn decode_body(r: ClientResponse&, limit: i64 = DECODED_MAX) -> Error {
     let format = coding_of(r.fields);
-    guard format != IDENTITY else { return no_error(); }
+    guard format != IDENTITY && r.body.len > 0 else { return no_error(); }
     guard format >= 0 else { return client_error("response"); }
     var plain: u8[>..] = [];
     guard compress::decompress(r.body, plain, format, limit) else { return client_error("response"); }
@@ -74,17 +75,18 @@ struct BodyDecoder {
 
 // Reads the next of x's body, decoded as its Content-Encoding says, and
 // appends at most most bytes of it to out: how many, or 0 once the body and
-// its stream have ended. A body that isn't compressed goes through as read
-// does. A coding this module doesn't decode, a stream that's corrupt, cut
-// short, or followed by more of the body, and one past b.limit fail with
-// call "response" and close the connection.
+// its stream have ended. A body that isn't compressed, or is empty, goes
+// through as read does. A coding this module doesn't decode, a stream that's
+// corrupt, cut short, or followed by more of the body, and one past b.limit
+// fail with call "response" and close the connection.
 fn read_decoded(s: Session&, x: ClientExchange&, b: BodyDecoder&, out: u8[>..]&, most: i64) -> i64, Error {
     if !x.headed {
         let e = response(s, x);
         guard e.code == 0 else { return 0, e; }
     }
     if !b.started {
-        b.format = coding_of(x.fields);
+        // A response done at its head has no body to decode.
+        b.format = if x.done { IDENTITY } else { coding_of(x.fields) };
         b.started = true;
         guard b.format != -1 else { return 0, failed(s, x, client_error("response")); }
         if b.format >= 0 { compress::reset(b.d, b.format); }
@@ -119,7 +121,7 @@ fn read_decoded(s: Session&, x: ClientExchange&, b: BodyDecoder&, out: u8[>..]&,
         let n, e = read(s, x, b.buf);
         guard e.code == 0 else { return 0, e; }
         if n == 0 {
-            guard b.done else { return 0, failed(s, x, client_error("response")); }
+            guard b.done || x.taken == 0 else { return 0, failed(s, x, client_error("response")); }
             return 0, no_error();
         }
         b.encoded.append(b.buf[..n]);

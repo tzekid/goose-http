@@ -8,3 +8,4 @@ a streamed body: 0, gzip, the same lines true, at most 1000 bytes a read
 /chain: failed: response
 10 MB of zeros, sent in under 20 KB true, against a 1 MB limit: response
   read in pieces: response, having made no more than the limit true
+no body to decode: a HEAD's 0 0, an empty one's 0 0, a HEAD's in pieces 0 0

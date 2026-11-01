@@ -3,7 +3,8 @@
 // what that server doesn't: a whole gzip body, and a streamed one flushed
 // piece by piece, read 1,000 bytes at a time; then from the peer, a zlib body
 // (HTTP's deflate), an identity body, a gzip body whose CRC is wrong, one cut
-// short, br, a chain of two codings, and 10 MB of zeros against a 1 MB limit.
+// short, br, a chain of two codings, 10 MB of zeros against a 1 MB limit, and
+// a HEAD's response and an empty body, which name gzip but have no body.
 import std;
 import os;
 import http from "../../";
@@ -75,7 +76,7 @@ thread_fn peer(lfd: i32) {
             continue;
         }
         let req = buf[..n];
-        let path = req[4..find(req, " HTTP/")];
+        let path = req[find(req, " ") + 1..find(req, " HTTP/")];
         if path == "/quit" {
             http::net_close(fd);
             return;
@@ -101,11 +102,12 @@ thread_fn peer(lfd: i32) {
             if path == "/short" { body.resize(body.len - 12); }
             if path == "/br" { coding = "br"; }
             if path == "/chain" { coding = "gzip, gzip"; }
+            if path == "/empty" { body.clear(); }
         }
         var out: u8[>..] = [];
         format(out, "HTTP/1.1 200 OK\r\nContent-Encoding: ", coding, "\r\nContent-Length: ", body.len,
                "\r\nConnection: close\r\n\r\n");
-        out.append(body);
+        if !starts_with(req, "HEAD ") { out.append(body); }
         send_text(fd, out);
         http::net_close(fd);
     }
@@ -186,6 +188,17 @@ fn main() {
     }
     print("  read in pieces: ", bxe.call, ", having made no more than the limit ", made <= 1 << 20);
     http::end(p, bx);
+    var hr, he = http::request(p, "HEAD", str(base, "/")) { req => http::accept_compressed(req); };
+    if he.code == 0 { he = http::decode_body(hr); }
+    var er, ee = http::get(p, str(base, "/empty")) { req => http::accept_compressed(req); };
+    if ee.code == 0 { ee = http::decode_body(er); }
+    var hx, hxe = http::begin(p, "HEAD", str(base, "/")) { req => http::accept_compressed(req); };
+    var hd = http::BodyDecoder { .. };
+    var none: u8[>..] = [];
+    let hn, hre = http::read_decoded(p, hx, hd, none, 1000);
+    http::end(p, hx);
+    print("no body to decode: a HEAD's ", he.code, " ", hr.body.len, ", an empty one's ", ee.code, " ",
+          er.body.len, ", a HEAD's in pieces ", hre.code, " ", hn);
     let q, qe = http::get(p, str(base, "/quit"));
     http::free(p);
     thread_wait(t);

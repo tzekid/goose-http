@@ -950,7 +950,7 @@ if err.code == 0 { err = http::decode_body(r); }   // r.body is decoded, its fie
 | Call | Does |
 |---|---|
 | `http::accept_compressed(req)` | Adds `Accept-Encoding: gzip, deflate`, the codings the module decodes, and no other |
-| `http::decode_body(r, limit)` | Decodes `r.body` in place, into at most `limit` bytes, 64 MB by default; a body that isn't compressed stays as it is |
+| `http::decode_body(r, limit)` | Decodes `r.body` in place, into at most `limit` bytes, 64 MB by default; a body that isn't compressed stays as it is, and so does an empty one, as a HEAD's, a 204's, or a 304's is whatever the fields say |
 | `http::read_decoded(s, x, b, out, most) -> i64, Error` | `http::read`, decoded: appends at most `most` decoded bytes of `x`'s body to `out`, with `b`, an `http::BodyDecoder { .. }`, holding the decoder and its `limit`; 0 once the body and its stream have ended |
 
 - `deflate` is zlib's stream, as HTTP has it; a raw DEFLATE stream isn't guessed at. A
