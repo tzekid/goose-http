@@ -44,7 +44,7 @@ struct WsClient {
     // The subprotocol the server chose, of those the handshake offered.
     protocol: u8[..128],
     // The longest message ws_receive takes, whether in one frame or several;
-    // a longer one fails the connection with 1009.
+    // a longer one fails the connection with 1009 (-1: no limit).
     limit: i64 = 1 << 20,
     // The opcode of a message whose fragments are coming, or 0, and what its
     // UTF-8 so far leaves to check.
@@ -183,8 +183,10 @@ fn ws_owns_field(lines: const u8[:]) -> bool {
 
 // Sends a message, op WS_TEXT or WS_BINARY, in one masked frame, within
 // ws.conn.ms. Text must be UTF-8. EPIPE once the connection is closed; a
-// failed send closes it.
+// failed send closes it; and call "websocket" for another op, since
+// ws_close sends the Close, and ws_receive the pongs.
 fn ws_send(ws: WsClient&, op: u8, data: const u8[:]) -> Error {
+    guard op == WS_TEXT || op == WS_BINARY else { return client_error("websocket"); }
     guard !ws.closing else { return Error { call: "send", code: EPIPE }; }
     return ws_put(ws, op, data);
 }
@@ -261,6 +263,10 @@ fn ws_receive(ws: WsClient&, out: u8[>..]&) -> u8, Error {
             out.clear();
             return 0, if e.code != 0 { e } else { Error { call: "recv", code: ECONNRESET } };
         }
+        // Frames already handled, such as pings, go, so that pending holds
+        // no more than a frame and a read, however many come.
+        drop_front(pending, at);
+        at = 0;
         pending.append(buf[..n]);
     }
 }
@@ -300,7 +306,7 @@ fn ws_frames(ws: WsClient&, src: const u8[:], out: u8[>..]&) -> u8, i64 {
             ws_fail(ws, WS_PROTOCOL_ERROR);
             break;
         }
-        guard control || n <= ws.limit - out.len else {
+        guard control || ws.limit < 0 || n <= ws.limit - out.len else {
             ws_fail(ws, WS_TOO_BIG);
             break;
         }
@@ -346,16 +352,20 @@ fn ws_frames(ws: WsClient&, src: const u8[:], out: u8[>..]&) -> u8, i64 {
     return 0, at;
 }
 
-// Starts the close (§7.1.2): sends a Close with code and reason, at most 123
-// bytes of UTF-8, then reads until the server's Close, within ws.conn.ms for
-// each wait, and closes the connection.
+// Starts the close (§7.1.2): sends a Close with code and reason, UTF-8 cut
+// to 123 bytes at a character's start, then reads until the server's Close,
+// within ws.conn.ms for each wait, and closes the connection. A code a Close
+// may not carry, such as 1005 or 1006, fails with call "websocket".
 fn ws_close(ws: WsClient&, code: i32 = WS_NORMAL, reason: const u8[:] = "") -> Error {
     guard !ws.done else { return no_error(); }
     if !ws.closing {
+        guard ws_code_ok(code) else { return client_error("websocket"); }
+        var cut = min(reason.len, 123);
+        while cut < reason.len && cut > 0 && (reason[cut] & 0xc0) == 0x80 { cut--; }
         var body: u8[..125] = [];
         body.push((code >> 8) as! u8);
         body.push(code as! u8);
-        body.append(reason[..min(reason.len, 123)]);
+        body.append(reason[..cut]);
         let e = ws_put(ws, WS_CLOSE, body);
         guard e.code == 0 else { return e; }
         ws.closing = true;

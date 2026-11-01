@@ -994,19 +994,20 @@ http::free(session);
 | Call | Does |
 |---|---|
 | `http::ws_connect(s, url) { req => ... }` | Sends the handshake, with what the block added, and returns the `http::WsClient` and an `http::Error`. The session's `ms`, `total_ms` up to the answer, `deny`, `via`, and TLS trust apply; a redirect isn't followed. Once open, the connection is the WebSocket's, and the session holds none, but keeps the TLS context, which it must outlive |
-| `http::ws_send(ws, op, data)` | Sends a message, `WS_TEXT` or `WS_BINARY`, in one frame masked with a key from the OS's secure random source; `EPIPE` once the WebSocket has closed |
+| `http::ws_send(ws, op, data)` | Sends a message, `WS_TEXT` or `WS_BINARY`, in one frame masked with a key from the OS's secure random source; `EPIPE` once the WebSocket has closed, and call `websocket` for another op |
 | `http::ws_receive(ws, out) -> u8, Error` | Waits for the next message and puts it in `out`, answering pings on the way: its opcode, or `WS_CLOSE` once the server has closed, with its reason in `out` and its code in `ws.close_code`. `ETIMEDOUT` after `ws.conn.ms` leaves the WebSocket as it was |
-| `http::ws_close(ws, code, reason)` | Sends a Close, reads until the server's, and closes the connection |
+| `http::ws_close(ws, code, reason)` | Sends a Close, its reason cut to 123 bytes where a character starts, reads until the server's, and closes the connection; call `websocket` for a code a Close may not carry, such as 1005 |
 
 - A handshake whose answer isn't 101, or lacks the right `Sec-WebSocket-Accept`,
   `Upgrade`, or `Connection`, or names an extension or a subprotocol not offered, fails
   with call `websocket` and closes the connection; `ws.status` is the answer's status. A
   block that sets `Upgrade` or a `Sec-WebSocket-` field the handshake writes fails it
   with call `header`.
-- A message is joined from its fragments, up to `ws.limit` bytes, 1 MB by default. A
-  frame the protocol forbids, such as a masked one, fails the WebSocket with a Close of
-  1002, text that isn't UTF-8 with 1007, and a longer message with 1009, and
-  `ws_receive` returns call `websocket`. No extension is offered.
+- A message is joined from its fragments, up to `ws.limit` bytes, 1 MB by default (-1:
+  no limit), and a call holds no more than that, a frame, and a read, whatever else
+  comes between. A frame the protocol forbids, such as a masked one, fails the
+  WebSocket with a Close of 1002, text that isn't UTF-8 with 1007, and a longer message
+  with 1009, and `ws_receive` returns call `websocket`. No extension is offered.
 
 ## The store
 

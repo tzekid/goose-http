@@ -1,0 +1,6 @@
+ws_receive of 'hi' with limit -1: op 1, '', message 'hi'
+ws_send of a ping: 'websocket'
+ws_close with 1005: 'websocket'
+4 MB of pongs, limit 1024: op 1, '', message 'hi'
+peer: the client's Close reason has 122 bytes, valid UTF-8 true
+ws_close with a 124-byte reason: ''
