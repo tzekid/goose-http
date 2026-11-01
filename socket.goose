@@ -145,10 +145,10 @@ let DENY_NON_PUBLIC = 15;
 // which connect to this host too; private 10.0.0.0/8, 172.16.0.0/12,
 // 192.168.0.0/16, the shared 100.64.0.0/10, and fc00::/7; link-local
 // 169.254.0.0/16 and fe80::/10; special multicast, reserved, documentation,
-// and benchmarking ranges, fec0::/10, Teredo's 2001::/32, and NAT64's
-// local-use 64:ff9b:1::/48. An IPv6 address
-// that holds an IPv4 one, IPv4-mapped, NAT64's 64:ff9b::/96, or 6to4's
-// 2002::/16, is the IPv4 address's class.
+// and benchmarking ranges, fec0::/10, Teredo's 2001::/32, NAT64's local-use
+// 64:ff9b:1::/48, and SIIT's ::ffff:0:0/96. An IPv6 address that holds an
+// IPv4 one, IPv4-mapped, NAT64's 64:ff9b::/96, or 6to4's 2002::/16, is the
+// IPv4 address's class.
 fn address_class(ip: const u8[16]&) -> i64 {
     var zeros = 0;
     while zeros < 16 && ip[zeros] == 0 { zeros++; }
@@ -160,6 +160,9 @@ fn address_class(ip: const u8[16]&) -> i64 {
         if ip[4] == 0 && ip[5] == 1 { return DENY_SPECIAL; }
     }
     if ip[0] == 0x20 && ip[1] == 0x02 { return ipv4_class(ip[2], ip[3], ip[4]); }
+    // SIIT's IPv4-translated ::ffff:0:0/96 (RFC 2765), which isn't routed
+    // as the IPv4 address it holds.
+    if zeros == 8 && ip[8] == 0xff && ip[9] == 0xff && ip[10] == 0 && ip[11] == 0 { return DENY_SPECIAL; }
     if zeros >= 15 { return DENY_LOOPBACK; }
     if zeros >= 12 { return DENY_SPECIAL; }
     if (ip[0] & 0xfe) == 0xfc { return DENY_PRIVATE; }
