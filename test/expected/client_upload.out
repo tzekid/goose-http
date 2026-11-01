@@ -6,6 +6,7 @@ refused before the body: begin 0, write body true, ended 0
   kept: false
 100 Continue: 0, 201 got 5, sum 532
 no 100: 0, 200 got 5, sum 532, waited for it true
+no 100, waiting until an answer: recv true, kept false
 short: body, kept false
 past Content-Length: body, kept false
 streamed, to request: body

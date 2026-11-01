@@ -12,3 +12,8 @@ an exchange not ended, A, then B A:
 deny changed, A B, then A:
   A9 B7
   A10
+no idle_ms, A B, a pause, A:
+  A11 B8
+  A11
+via changed, then A, which goes where via says:
+  connect

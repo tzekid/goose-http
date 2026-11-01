@@ -2,7 +2,8 @@
 // pieces, to a peer in the program that reads them by the request's path: 3
 // MB with a Content-Length, to a reader that takes its time; chunks; Expect:
 // 100-continue answered with a refusal before the body, with 100 Continue,
-// and not at all; a body short of its Content-Length and one past it; a
+// and not at all, with expect_ms and without, which waits only Session.ms;
+// a body short of its Content-Length and one past it; a
 // streamed body given to request; and Session.total_ms against a reader too
 // slow for it.
 import std;
@@ -197,6 +198,15 @@ fn main() {
     };
     let waited = http::net_clock_ms() - began;
     print("no 100: ", e2.code, ", ", r2.status, " ", r2.body, ", waited for it ", waited >= 150 && waited < 4000);
+    s.expect_ms = -1;
+    s.ms = 300;
+    let r9, e9 = http::put(s, str(base, "/silent")) { req =>
+        http::body(req, "text/plain", "hello");
+        http::expect_continue(req);
+    };
+    print("no 100, waiting until an answer: ", e9.call, " ", e9.code == http::ETIMEDOUT, ", kept ", s.s.fd >= 0);
+    s.ms = 5000;
+    s.expect_ms = 200;
 
     x, e = http::begin(s, "PUT", str(base, "/count")) { req => http::stream(req, "", 10); };
     http::write(s, x, "12345");

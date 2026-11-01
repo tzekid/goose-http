@@ -2,7 +2,9 @@
 // which names the connection a request came on: two origins in turn with
 // none kept, and with two; a kept connection past idle_ms; three origins
 // with one kept; a connection in an exchange begin started, which isn't
-// kept; and a deny that changed, after which a kept connection isn't reused.
+// kept; a deny that changed, after which a kept connection isn't reused;
+// idle_ms -1, which keeps one however long; and a via that changed, which
+// a kept connection doesn't stand in for.
 import std;
 import http from "../../";
 import tls from "github.com/kaitk/goose-tls@v0.0.6";
@@ -121,6 +123,19 @@ fn main() {
     run(s, urls, [0, 1]);
     s.deny = http::DENY_PRIVATE;
     run(s, urls, [0]);
+    http::free(s);
+
+    print("no idle_ms, A B, a pause, A:");
+    s = http::session(5000);
+    s.max_idle = 2;
+    s.idle_ms = -1;
+    run(s, urls, [0, 1]);
+    sleep_ms(100);
+    run(s, urls, [0]);
+    print("via changed, then A, which goes where via says:");
+    s.via.append("unix:/nonexistent/socket");
+    let r, ve = http::get(s, urls[0]);
+    print("  ", ve.call);
     http::free(s);
 
     for i in 3 {

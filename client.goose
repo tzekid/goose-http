@@ -38,7 +38,8 @@ struct Session {
     // its response's last byte, however steadily bytes arrive (-1: none).
     total_ms: i64 = -1,
     // How long a request that asked for 100 Continue (expect_continue)
-    // waits for it before it sends its body anyway (-1: until an answer).
+    // waits for it before it sends its body anyway (-1: until an answer,
+    // which a wait past ms fails as any wait does).
     expect_ms: i64 = 1000,
     // The most redirects a request follows (0 or less: none, a redirect is
     // the response), as follow describes.
@@ -65,15 +66,15 @@ struct Session {
     // How many connections to other origins the session keeps open beside
     // its own, up to IDLE_MAX, so that a program calling several origins in
     // turn reconnects to none (0: none, as one origin needs), and how long
-    // one is kept unused.
+    // one is kept unused (-1: no limit).
     max_idle: i64 = 0,
     idle_ms: i64 = 30000,
     ctx: tls::Context,
     s: Socket = Socket { fd: -1 },
     c: tls::Conn,
     // The connection's scheme, host, and port, as https://host:port, and the
-    // deny and proxy it was opened with, after them.
-    peer: u8[..600],
+    // deny, proxy, and via it was opened with, after them.
+    peer: u8[..PEER_MAX],
     // Whether the connection is in an exchange that begin started and end
     // hasn't ended, so that it isn't reused or kept for another request; and
     // one more each time a request or a WebSocket takes a connection, new or
@@ -86,10 +87,12 @@ struct Session {
 }
 
 let IDLE_MAX = 8;
+// A peer's longest key: an authority under 300 bytes, deny, proxy, and via.
+let PEER_MAX = 900;
 
 // A connection a session keeps for its origin's next request, as Session
 // holds its own, and since when.
-struct IdleConnection { s: Socket = Socket { fd: -1 }, c: tls::Conn, peer: u8[..600], since: i64 = 0 }
+struct IdleConnection { s: Socket = Socket { fd: -1 }, c: tls::Conn, peer: u8[..PEER_MAX], since: i64 = 0 }
 
 // A session whose TLS trusts OpenSSL's store of certificate authorities. An
 // https request fails with call "tls" when OpenSSL couldn't make its context.
@@ -658,7 +661,9 @@ fn await_continue(s: Session&, x: ClientExchange&) -> Error {
         guard !expired(x.until) else { return failed(s, x, Error { call: "recv", code: ETIMEDOUT }); }
         guard !expired(phase) else { return no_error(); }
         let n, e = take(s, buf, phase);
-        if e.code == ETIMEDOUT && !expired(x.until) { return no_error(); }
+        // A wait cut short by Session.ms goes on until expect_ms is over;
+        // without expect_ms, it's the request's failure, as any wait's.
+        if e.code == ETIMEDOUT && wait >= 0 && !expired(x.until) { continue; }
         guard e.code == 0 else { return failed(s, x, e); }
         guard n > 0 else { return failed(s, x, client_error("response")); }
         x.held.append(buf[..n]);
@@ -925,12 +930,12 @@ fn wait_ms(s: const Session&, until: i64) -> i64 {
 // here and below, is the clock's time by which the request must end (-1:
 // none), as deadline gives it.
 fn open(s: Session&, u: Url, until: i64 = -1, tunnel: bool = false) -> Error {
-    var peer: u8[..600] = [];
+    var peer: u8[..PEER_MAX] = [];
     guard u.authority.len < 300 else { return client_error("url"); }
     let proxied = s.proxy.len > 0;
     let through = proxied && (u.secure || tunnel);
     format(peer, if u.secure { "https://" } else { "http://" }, u.host, ":", u.port, " ", s.deny, " ", s.proxy,
-           if through { " tunnel" } else { "" });
+           if through { " tunnel" } else { "" }, " ", s.via);
     if s.s.fd >= 0 && s.peer == peer && !s.busy {
         // A connection the server has closed, or that holds bytes nothing
         // asked for, such as TLS's close_notify, isn't reused.
@@ -1113,7 +1118,7 @@ fn park(s: Session&) {
 fn take_idle(s: Session&, peer: const u8[:]) -> bool {
     var i = 0;
     while i < s.idle.len {
-        let stale = net_clock_ms() - s.idle[i].since > s.idle_ms;
+        let stale = s.idle_ms >= 0 && net_clock_ms() - s.idle[i].since > s.idle_ms;
         guard stale || s.idle[i].peer == peer else {
             i++;
             continue;

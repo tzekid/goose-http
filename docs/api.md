@@ -805,7 +805,7 @@ to, as `http::connect`'s `deny` ([on a thread without a loop](#on-a-thread-witho
 `http::DENY_NON_PUBLIC` keeps a session that requests URLs from outside to public
 addresses, at each redirect too, and fails a request otherwise with `connect`'s
 `EACCES`. With `via`, `via`'s address is the one checked. A connection the session holds
-isn't reused once `deny` has changed.
+isn't reused once `deny`, `proxy`, or `via` has changed.
 
 `Session.proxy`, empty by default, is an HTTP proxy every request goes through:
 `http://host:port`, or `http://user:password@host:port`, percent-encoded, for a proxy
@@ -830,7 +830,7 @@ another origin's requests. With `via`, `via`'s address is the proxy's. Shown in
 - `Session.max_idle`, 0 by default and at most 8, is how many connections to other
   origins the session keeps open beside its own, so that a lane calling several in turn
   reconnects to none; the oldest makes room. One kept past `Session.idle_ms`, 30,000 by
-  default, is closed rather than reused, and so is one whose server has closed it. Only
+  default (-1: no limit), is closed rather than reused, and so is one whose server has closed it. Only
   a connection whose exchange has ended is kept, and only for the same origin, `deny`,
   and proxy; `http::free` closes them all. Shown in `test/client/client_idle.goose`.
 - It writes `Host`, `User-Agent: goose-http`, `Accept: */*`, `Content-Type`, and
@@ -920,8 +920,8 @@ if err.code == 0 || err.code == http::EPIPE { err = http::response(session, x); 
   with call `body`.
 - `http::expect_continue(req)` sends `Expect: 100-continue` and holds the body, a
   streamed one or one from `http::body` or `http::json`, until the server answers 100
-  Continue, or for `Session.expect_ms`, 1,000 by default (-1: until it answers), after
-  which the body goes anyway. A server that answers with a final status first refuses
+  Continue, or for `Session.expect_ms`, 1,000 by default (-1: until it answers, a wait
+  past `Session.ms` failing as any does), after which the body goes anyway. A server that answers with a final status first refuses
   the body: `write` returns `EPIPE` from `body`, `end_body` does nothing, `response`
   returns the answer, and `end` closes the connection. The session writes `Expect`
   itself: `http::header` refuses it.
