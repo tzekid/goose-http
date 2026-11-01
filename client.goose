@@ -382,7 +382,8 @@ fn delete(s: Session&, url: const u8[:]) -> ClientResponse, Error { return reque
 
 // A URL's parts, as slices of it. authority is host[:port], as the Host
 // field takes it; host has no brackets around an IPv6 address; target is the
-// path and query, "/" when the URL has neither.
+// path and query, "/" when the URL has neither, and the query alone when it
+// has no path, which a request line puts "/" before (RFC 9112 §3.2.1).
 struct Url { secure: bool = false, authority: const u8[:], host: const u8[:], port: i64 = 80, target: const u8[:] }
 
 let AUTHORITY_END = byte_set("/?");
@@ -494,6 +495,7 @@ fn proxy_authorization(out: u8[>..]&, p: Proxy) {
 fn write_request(out: u8[>..]&, method: const u8[:], u: Url, req: const ClientRequest&, p: Proxy = Proxy { .. }) {
     format(out, method, " ");
     if p.host.len > 0 { format(out, "http://", u.authority); }
+    if u.target[0] == '?' { out.push('/'); }
     format(out, u.target, " HTTP/1.1\r\nHost: ", u.authority, "\r\nUser-Agent: goose-http\r\nAccept: */*\r\n");
     proxy_authorization(out, p);
     out.append(req.lines);

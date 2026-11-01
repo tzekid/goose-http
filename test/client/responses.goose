@@ -78,6 +78,8 @@ fn main() {
             "POST /x?y HTTP/1.1\r\nHost: h\r\nUser-Agent: goose-http\r\nAccept: */*\r\nContent-Length: 0\r\n\r\n");
     written("HEAD", "HEAD", "https://localhost:14000/order", "", "", "",
             "HEAD /order HTTP/1.1\r\nHost: localhost:14000\r\nUser-Agent: goose-http\r\nAccept: */*\r\n\r\n");
+    written("a query with no path", "GET", "http://h?y=1", "", "", "",
+            "GET /?y=1 HTTP/1.1\r\nHost: h\r\nUser-Agent: goose-http\r\nAccept: */*\r\n\r\n");
 
     response("length", "HTTP/1.1 201 Created\r\nLocation: https://ca.test/acct/1\r\nreplay-NONCE:  abc \r\nContent-Length: 5\r\n\r\nhello", false);
     response("length, cut at the close", "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nhello", true);

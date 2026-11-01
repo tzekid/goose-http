@@ -14,6 +14,7 @@ ftp://x/ -> refused
 POST: as expected
 POST, no body: as expected
 HEAD: as expected
+a query with no path: as expected
 length: complete, 201, [hello], location https://ca.test/acct/1, nonce [abc]
 length, cut at the close: malformed
 length, past the limit: malformed

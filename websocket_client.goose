@@ -95,7 +95,8 @@ fn ws_connect<F>(s: Session&, url: const u8[:]) -> WsClient, Error {
     var key: u8[>..] = [];
     base64::encode(key, nonce);
     var wire: u8[>..] = [];
-    format(wire, "GET ", u.target, " HTTP/1.1\r\nHost: ", u.authority, "\r\nUser-Agent: goose-http\r\n",
+    format(wire, "GET ", if u.target[0] == '?' { "/" } else { "" }, u.target, " HTTP/1.1\r\nHost: ", u.authority,
+           "\r\nUser-Agent: goose-http\r\n",
            "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ", key,
            "\r\nSec-WebSocket-Version: 13\r\n", req.lines, "\r\n");
 
